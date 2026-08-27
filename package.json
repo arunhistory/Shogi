@@ -8,7 +8,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:browser": "node scripts/browser-smoke.mjs"
+    "test:browser": "node scripts/browser-smoke-runner.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
