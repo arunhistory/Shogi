@@ -59,13 +59,16 @@ function socketInbox(socket){
   };
 }
 
+function protocolsFor(playerToken){return['shogi-v1',`player.${playerToken}`];}
+
 function openSocket(roomId,playerToken,requestOrigin=origin){
   return new Promise((resolve,reject)=>{
-    const socket=new WebSocket(`${wsBase}/v1/rooms/${encodeURIComponent(roomId)}/socket`,[],{origin:requestOrigin});
+    const socket=new WebSocket(`${wsBase}/v1/rooms/${encodeURIComponent(roomId)}/socket`,protocolsFor(playerToken),{origin:requestOrigin});
     const inbox=socketInbox(socket);
     const timer=setTimeout(()=>{socket.terminate();reject(new Error('WEBSOCKET_OPEN_TIMEOUT'));},5000);
     socket.once('open',()=>{
       clearTimeout(timer);
+      assert.equal(socket.protocol,'shogi-v1');
       socket.send(JSON.stringify({type:'authenticate',playerToken}));
       resolve({socket,inbox});
     });
@@ -73,15 +76,15 @@ function openSocket(roomId,playerToken,requestOrigin=origin){
   });
 }
 
-async function expectWrongOriginRejected(roomId){
+async function expectUpgradeRejected(roomId,protocols,expectedStatus,requestOrigin=origin){
   await new Promise((resolve,reject)=>{
-    const socket=new WebSocket(`${wsBase}/v1/rooms/${encodeURIComponent(roomId)}/socket`,[],{origin:'https://example.invalid'});
-    const timer=setTimeout(()=>{socket.terminate();reject(new Error('WRONG_ORIGIN_SOCKET_TIMEOUT'));},3000);
+    const socket=new WebSocket(`${wsBase}/v1/rooms/${encodeURIComponent(roomId)}/socket`,protocols,{origin:requestOrigin});
+    const timer=setTimeout(()=>{socket.terminate();reject(new Error('REJECTED_SOCKET_TIMEOUT'));},3000);
     socket.once('unexpected-response',(_request,response)=>{
       clearTimeout(timer);
-      try{assert.equal(response.statusCode,403);resolve();}catch(error){reject(error);}finally{response.resume();}
+      try{assert.equal(response.statusCode,expectedStatus);resolve();}catch(error){reject(error);}finally{response.resume();}
     });
-    socket.once('open',()=>{clearTimeout(timer);socket.terminate();reject(new Error('WRONG_ORIGIN_SOCKET_ACCEPTED'));});
+    socket.once('open',()=>{clearTimeout(timer);socket.terminate();reject(new Error('REJECTED_SOCKET_ACCEPTED'));});
     socket.once('error',()=>{});
   });
 }
@@ -133,7 +136,12 @@ async function main(){
   assert.equal(terms.response.status,200);
   assert.deepEqual(terms.data,{key:'terms',available:false,revision:0,body:null});
 
-  await expectWrongOriginRejected(created.data.roomId);
+  await expectUpgradeRejected(created.data.roomId,protocolsFor(created.data.playerToken),403,'https://example.invalid');
+  await expectUpgradeRejected(created.data.roomId,['shogi-v1'],401);
+  for(let index=0;index<8;index++){
+    const invalidToken=`${String(index).padStart(2,'0')}${'x'.repeat(41)}`;
+    await expectUpgradeRejected(created.data.roomId,protocolsFor(invalidToken),403);
+  }
 
   const sente1=await openSocket(created.data.roomId,created.data.playerToken);
   const senteAuth=await sente1.inbox.until(v=>v.type==='authenticated');
@@ -197,11 +205,6 @@ async function main(){
   assert.equal(afterDisconnect.state.status,'playing','disconnect must not become a loss');
   assert.equal(afterDisconnect.state.revision,2);
   assert.equal(afterDisconnect.state.connections.sente,2,'same-seat multiconnection remains one player identity with two live sockets');
-
-  const invalid=await openSocket(created.data.roomId,'x'.repeat(43));
-  const authRejected=await invalid.inbox.until(v=>v.type==='auth-rejected');
-  assert.equal(authRejected.type,'auth-rejected');
-  invalid.socket.terminate();
 
   sente1.socket.terminate();
   sente2.socket.terminate();
