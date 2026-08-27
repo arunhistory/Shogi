@@ -4,11 +4,17 @@ on:
     paths:
       - 'cpp/**'
       - 'scripts/build-wasm.sh'
+      - 'scripts/test-wasm.mjs'
+      - 'src/game/wasm.ts'
+      - 'src/game/cpu-worker.ts'
       - '.github/workflows/wasm-verify.yml'
   pull_request:
     paths:
       - 'cpp/**'
       - 'scripts/build-wasm.sh'
+      - 'scripts/test-wasm.mjs'
+      - 'src/game/wasm.ts'
+      - 'src/game/cpu-worker.ts'
       - '.github/workflows/wasm-verify.yml'
 jobs:
   build-wasm:
@@ -23,3 +29,5 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Verify output
         run: test -s public/wasm/shogi_engine.wasm
+      - name: Test WebAssembly runtime
+        run: node scripts/test-wasm.mjs
