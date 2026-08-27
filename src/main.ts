@@ -164,6 +164,7 @@ function maybeStartCpu(){
   cpuThinking=true;
   const requestId=crypto.randomUUID();
   const sourceKey=positionKey(pos);
+  const wasmUrl=new URL('wasm/shogi_engine.wasm',document.baseURI).toString();
   cpuRequestId=requestId;
   cpuWorker=new Worker(new URL('./game/cpu-worker.ts',import.meta.url),{type:'module'});
   cpuWorker.onmessage=(event:MessageEvent<{requestId:string;positionKey:string;ok:boolean;result?:{move:Move|null};error?:string}>)=>{
@@ -182,7 +183,7 @@ function maybeStartCpu(){
     play();
   };
   cpuWorker.onerror=()=>{cancelCpu();play();};
-  cpuWorker.postMessage({requestId,position:pos,level:cpuLevel});
+  cpuWorker.postMessage({requestId,position:pos,level:cpuLevel,wasmUrl});
   play();
 }
 
