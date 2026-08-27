@@ -13,7 +13,7 @@ interface ShogiWasmExports extends WebAssembly.Exports {
   shogi_is_mate:(count:number)=>number;
 }
 
-type InstantiateResult=WebAssembly.Instance|WebAssembly.WebAssemblyInstantiatedSource;
+type InstantiateResult=WebAssembly.Instance|{instance:WebAssembly.Instance};
 
 const POSITION_MAGIC=0x53484749;
 const POSITION_WORDS=97;
