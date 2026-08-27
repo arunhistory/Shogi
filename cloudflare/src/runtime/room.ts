@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { applyMove, gameOutcome, initialPosition } from '../../../src/game/engine';
+import type { Move, Position } from '../../../src/game/types';
 import {
   type Env,
   type SocketAttachment,
@@ -8,7 +9,6 @@ import {
   moveFingerprint,
   parseHandicap,
   parseMove,
-  publicState,
   randomToken,
   readJson,
   requestIdPattern,
@@ -49,15 +49,15 @@ export class ShogiRoom extends DurableObject<Env>{
     await this.exclusive(()=>this.handleSocketMessage(socket,message));
   }
 
-  async webSocketClose(_socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):Promise<void>{
+  async webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):Promise<void>{
     const state=await this.ctx.storage.get<StoredRoomState>('state');
-    if(state)this.broadcastState(state);
+    if(state)this.broadcastState(state,socket);
     // A disconnect never becomes resignation or a loss by itself.
   }
 
-  async webSocketError(_socket:WebSocket,_error:unknown):Promise<void>{
+  async webSocketError(socket:WebSocket,_error:unknown):Promise<void>{
     const state=await this.ctx.storage.get<StoredRoomState>('state');
-    if(state)this.broadcastState(state);
+    if(state)this.broadcastState(state,socket);
   }
 
   private async exclusive<T>(operation:()=>Promise<T>):Promise<T>{
@@ -161,7 +161,7 @@ export class ShogiRoom extends DurableObject<Env>{
     const seat=attachment.seat!;
     const id=typeof data.requestId==='string'?data.requestId:'';
     if(!requestIdPattern.test(id)){this.reject(socket,id,'INVALID_REQUEST_ID',state.revision);return;}
-    let move;
+    let move:Move;
     try{move=parseMove(data.move);}catch{this.reject(socket,id,'INVALID_MOVE',state.revision);return;}
     const fingerprint=moveFingerprint(move);
     const prior=state.processed[seat][id];
@@ -176,7 +176,7 @@ export class ShogiRoom extends DurableObject<Env>{
     const expectedRevision=Number(data.expectedRevision);
     if(!Number.isSafeInteger(expectedRevision)||expectedRevision!==state.revision){this.reject(socket,id,'STALE_REVISION',state.revision);return;}
 
-    let position;
+    let position:Position;
     try{position=applyMove(state.position,move);}catch(error){
       this.reject(socket,id,error instanceof Error&&error.message==='GAME_ENDED'?'GAME_NOT_PLAYING':'ILLEGAL_MOVE',state.revision);
       return;
@@ -203,12 +203,32 @@ export class ShogiRoom extends DurableObject<Env>{
     this.send(socket,{type:'auth-rejected'});
     try{socket.close(4003,'authentication-failed');}catch{/* already closed */}
   }
-  private reject(socket:WebSocket,requestIdValue:string,code:string,revision:number){this.send(socket,{type:'rejected',requestId:requestIdValue,code,revision});}
-  private sendState(socket:WebSocket,state:StoredRoomState){this.send(socket,{type:'state',state:publicState(state,this.ctx)});}
-  private broadcastState(state:StoredRoomState){
+
+  private stateForClient(state:StoredRoomState,excludedSocket?:WebSocket){
+    const connections:{sente:number;gote:number}={sente:0,gote:0};
     for(const socket of this.ctx.getWebSockets()){
+      if(socket===excludedSocket)continue;
       const attachment=socket.deserializeAttachment() as SocketAttachment|undefined;
-      if(attachment?.authenticated)this.sendState(socket,state);
+      if(attachment?.authenticated&&attachment.seat)connections[attachment.seat]++;
+    }
+    return{
+      roomId:state.roomId,
+      revision:state.revision,
+      position:state.position,
+      status:state.status,
+      connections,
+      ...(state.winner?{winner:state.winner}:{}),
+      ...(state.resultReason?{resultReason:state.resultReason}:{}),
+    };
+  }
+
+  private reject(socket:WebSocket,requestIdValue:string,code:string,revision:number){this.send(socket,{type:'rejected',requestId:requestIdValue,code,revision});}
+  private sendState(socket:WebSocket,state:StoredRoomState,excludedSocket?:WebSocket){this.send(socket,{type:'state',state:this.stateForClient(state,excludedSocket)});}
+  private broadcastState(state:StoredRoomState,excludedSocket?:WebSocket){
+    for(const socket of this.ctx.getWebSockets()){
+      if(socket===excludedSocket)continue;
+      const attachment=socket.deserializeAttachment() as SocketAttachment|undefined;
+      if(attachment?.authenticated)this.sendState(socket,state,excludedSocket);
     }
   }
   private send(socket:WebSocket,value:unknown){try{socket.send(JSON.stringify(value));}catch{/* already closed */}}
