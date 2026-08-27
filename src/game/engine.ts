@@ -166,7 +166,7 @@ function legalDropBase(pos:Position,kind:PieceKind,y:number,x:number):boolean{
   return true;
 }
 
-function legalMovesInternal(pos:Position,checkPawnDropMate:boolean):Move[]{
+function legalMovesInternal(pos:Position):Move[]{
   const out:Move[]=[];
   for(let y=0;y<9;y++)for(let x=0;x<9;x++){
     const piece=pos.board[y]![x];
@@ -194,7 +194,10 @@ function legalMovesInternal(pos:Position,checkPawnDropMate:boolean):Move[]{
       const move:Move={drop:kind,to:[y,x]};
       const next=rawApply(pos,move);
       if(isCheck(next,pos.turn))continue;
-      if(checkPawnDropMate&&kind==='pawn'&&isCheck(next,next.turn)&&legalMovesInternal(next,false).length===0)continue;
+      // A checking pawn drop is illegal only when the opponent has no fully legal reply.
+      // Reply legality must itself include the pawn-drop-mate rule; otherwise a reply that
+      // is itself an illegal uchi-fuzume could incorrectly make the original drop legal.
+      if(kind==='pawn'&&isCheck(next,next.turn)&&legalMovesInternal(next).length===0)continue;
       out.push(move);
     }
   }
@@ -202,7 +205,7 @@ function legalMovesInternal(pos:Position,checkPawnDropMate:boolean):Move[]{
 }
 
 export function legalMoves(pos:Position):Move[]{
-  return legalMovesInternal(pos,true);
+  return legalMovesInternal(pos);
 }
 
 // CPU探索等で、legalMoves() が生成した着手を再検証せず適用するための内部境界。
