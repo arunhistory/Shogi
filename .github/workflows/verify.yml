@@ -12,5 +12,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install
+      - run: npm run verify:wasm
       - run: npm test
       - run: npm run build
