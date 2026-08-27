@@ -16,6 +16,7 @@ import {
   safeEqual,
   sha256,
 } from './common';
+import { playerTokenPattern, websocketPlayerToken, websocketProtocol } from './socket-auth';
 
 const joinRequestPattern=/^(passcode|invite):[A-Za-z0-9_-]{8,128}$/;
 
@@ -27,15 +28,7 @@ export class ShogiRoom extends DurableObject<Env>{
   async fetch(request:Request):Promise<Response>{
     const url=new URL(request.url);
     if(url.pathname==='/socket'&&request.headers.get('upgrade')?.toLowerCase()==='websocket'){
-      const state=await this.ctx.storage.get<StoredRoomState>('state');
-      if(!state)return errorJson('ROOM_NOT_FOUND',404);
-      if(this.ctx.getWebSockets().length>=8)return errorJson('TOO_MANY_CONNECTIONS',429);
-      const pair=new WebSocketPair();
-      const client=pair[0];
-      const server=pair[1];
-      this.ctx.acceptWebSocket(server);
-      server.serializeAttachment({connectionId:randomToken(12),authenticated:false} satisfies SocketAttachment);
-      return new Response(null,{status:101,webSocket:client});
+      return this.exclusive(()=>this.openSocket(request));
     }
 
     return this.exclusive(async()=>{
@@ -66,6 +59,33 @@ export class ShogiRoom extends DurableObject<Env>{
     this.gate=new Promise<void>(resolve=>{release=resolve;});
     await previous;
     try{return await operation();}finally{release();}
+  }
+
+  private async openSocket(request:Request):Promise<Response>{
+    const state=await this.ctx.storage.get<StoredRoomState>('state');
+    if(!state)return errorJson('ROOM_NOT_FOUND',404);
+
+    const playerToken=websocketPlayerToken(request.headers);
+    if(!playerToken)return errorJson('PLAYER_AUTH_REQUIRED',401);
+    const tokenHash=await sha256(playerToken);
+    const seat=(state.players.sente&&safeEqual(tokenHash,state.players.sente))?'sente'
+      :(state.players.gote&&safeEqual(tokenHash,state.players.gote))?'gote':null;
+    if(!seat)return errorJson('PLAYER_AUTH_REJECTED',403);
+
+    // Only a credential that already owns a seat can consume a live WebSocket slot.
+    if(this.ctx.getWebSockets().length>=8)return errorJson('TOO_MANY_CONNECTIONS',429);
+    const pair=new WebSocketPair();
+    const client=pair[0];
+    const server=pair[1];
+    this.ctx.acceptWebSocket(server);
+    // The header already proved the seat identity. The existing authenticate message
+    // remains as a second equality check before this socket receives game state.
+    server.serializeAttachment({connectionId:randomToken(12),authenticated:false,seat} satisfies SocketAttachment);
+    return new Response(null,{
+      status:101,
+      webSocket:client,
+      headers:{'sec-websocket-protocol':websocketProtocol},
+    });
   }
 
   private async initialize(request:Request):Promise<Response>{
@@ -129,31 +149,32 @@ export class ShogiRoom extends DurableObject<Env>{
     try{value=JSON.parse(message);}catch{this.send(socket,{type:'error',code:'INVALID_JSON'});return;}
     if(!value||typeof value!=='object'||Array.isArray(value)){this.send(socket,{type:'error',code:'INVALID_MESSAGE'});return;}
     const data=value as Record<string,unknown>;
-    const attachment=(socket.deserializeAttachment() as SocketAttachment|undefined)??{connectionId:randomToken(12),authenticated:false};
+    const attachment=socket.deserializeAttachment() as SocketAttachment|undefined;
+    if(!attachment?.seat){this.rejectAuthentication(socket);return;}
+
+    const state=await this.ctx.storage.get<StoredRoomState>('state');
+    if(!state){this.send(socket,{type:'error',code:'ROOM_NOT_FOUND'});return;}
 
     if(!attachment.authenticated){
-      if(data.type!=='authenticate'||typeof data.playerToken!=='string'||data.playerToken.length<32||data.playerToken.length>256){
+      if(data.type!=='authenticate'||typeof data.playerToken!=='string'||!playerTokenPattern.test(data.playerToken)){
         this.rejectAuthentication(socket);return;
       }
-      const state=await this.ctx.storage.get<StoredRoomState>('state');
-      if(!state){this.rejectAuthentication(socket);return;}
       const tokenHash=await sha256(data.playerToken);
-      const seat=(state.players.sente&&safeEqual(tokenHash,state.players.sente))?'sente'
-        :(state.players.gote&&safeEqual(tokenHash,state.players.gote))?'gote':null;
-      if(!seat){this.rejectAuthentication(socket);return;}
-      socket.serializeAttachment({...attachment,authenticated:true,seat} satisfies SocketAttachment);
-      this.send(socket,{type:'authenticated',seat});
+      const expectedHash=state.players[attachment.seat];
+      if(!expectedHash||!safeEqual(tokenHash,expectedHash)){
+        this.rejectAuthentication(socket);return;
+      }
+      socket.serializeAttachment({...attachment,authenticated:true} satisfies SocketAttachment);
+      this.send(socket,{type:'authenticated',seat:attachment.seat});
       this.sendState(socket,state);
       this.broadcastState(state);
       return;
     }
 
-    const state=await this.ctx.storage.get<StoredRoomState>('state');
-    if(!state){this.send(socket,{type:'error',code:'ROOM_NOT_FOUND'});return;}
     if(data.type==='sync'){this.sendState(socket,state);return;}
     if(data.type!=='move'){this.send(socket,{type:'error',code:'UNKNOWN_MESSAGE'});return;}
 
-    const seat=attachment.seat!;
+    const seat=attachment.seat;
     const id=typeof data.requestId==='string'?data.requestId:'';
     if(!requestIdPattern.test(id)){this.reject(socket,id,'INVALID_REQUEST_ID',state.revision);return;}
     let move:Move;
