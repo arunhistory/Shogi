@@ -1,33 +1,35 @@
-import type { Move, Position, Side } from '../game/types';
+import type { Handicap, Move, Position, Side } from '../game/types';
 
 export interface OnlineRoomEntry {
-  roomId: string;
-  inviteUrl: string;
-  passcode: string;
+  roomId:string;
+  inviteUrl:string;
+  passcode:string;
+  seat:Side;
+  revision:number;
 }
 
-interface RoomHandshakeResponse extends OnlineRoomEntry {
-  playerToken: string;
-  seat: Side;
-  revision: number;
-}
+interface RoomHandshakeResponse extends OnlineRoomEntry {playerToken:string;}
 
 export interface AuthoritativeState {
-  roomId: string;
-  revision: number;
-  position: Position;
-  status: 'waiting'|'playing'|'ended';
-  winner?: Side;
-  resultReason?: string;
+  roomId:string;
+  revision:number;
+  position:Position;
+  status:'waiting'|'playing'|'ended';
+  connections:{sente:number;gote:number};
+  winner?:Side;
+  resultReason?:string;
 }
 
 export type OnlineEvent =
-  |{type:'authenticated'}
+  |{type:'authenticated';seat:Side}
   |{type:'state';state:AuthoritativeState}
   |{type:'rejected';requestId:string;code:string;revision:number}
+  |{type:'disconnected';code:number}
   |{type:'error';code:string};
 
-const storageKey=(roomId:string)=>`shogi:room:${roomId}:player-token`;
+const tokenKey=(roomId:string)=>`shogi:room:${roomId}:player-token`;
+const roomInfoKey=(roomId:string)=>`shogi:room:${roomId}:info`;
+const inviteRoomKey=(inviteToken:string)=>`shogi:invite:${inviteToken}:room`;
 
 function apiBase(value:string):string{
   const url=new URL(value);
@@ -46,22 +48,23 @@ function assertString(value:unknown,name:string,maxLength=512):string{
 }
 
 function parseHandshake(value:unknown):RoomHandshakeResponse{
-  if(!value||typeof value!=='object')throw new Error('INVALID_ROOM_RESPONSE');
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('INVALID_ROOM_RESPONSE');
   const data=value as Record<string,unknown>;
   const seat=data.seat;
   if(seat!=='sente'&&seat!=='gote')throw new Error('INVALID_SEAT');
-  const revision=data.revision;
-  if(!Number.isSafeInteger(revision)||Number(revision)<0)throw new Error('INVALID_REVISION');
+  const revision=Number(data.revision);
+  if(!Number.isSafeInteger(revision)||revision<0)throw new Error('INVALID_REVISION');
   const inviteUrl=assertString(data.inviteUrl,'INVITE_URL',2048);
   const parsedInvite=new URL(inviteUrl,location.href);
   if(parsedInvite.protocol!=='https:'&&parsedInvite.protocol!=='http:')throw new Error('INVALID_INVITE_URL');
+  if(parsedInvite.origin!==location.origin)throw new Error('INVALID_INVITE_ORIGIN');
   return{
     roomId:assertString(data.roomId,'ROOM_ID',128),
     inviteUrl:parsedInvite.toString(),
     passcode:assertString(data.passcode,'PASSCODE',128),
     playerToken:assertString(data.playerToken,'PLAYER_TOKEN',512),
     seat,
-    revision:Number(revision),
+    revision,
   };
 }
 
@@ -80,41 +83,73 @@ async function postJson(base:string,path:string,body:unknown):Promise<unknown>{
   return response.json();
 }
 
-function rememberPlayer(handshake:RoomHandshakeResponse):void{
-  // Room discovery credentials and existing-player credentials are deliberately separate.
-  // The reconnect token is never placed in the invite URL, passcode, or WebSocket URL.
-  sessionStorage.setItem(storageKey(handshake.roomId),handshake.playerToken);
+function publicEntry(handshake:RoomHandshakeResponse):OnlineRoomEntry{
+  return{
+    roomId:handshake.roomId,
+    inviteUrl:handshake.inviteUrl,
+    passcode:handshake.passcode,
+    seat:handshake.seat,
+    revision:handshake.revision,
+  };
 }
 
-export async function createOnlineRoom(base:string):Promise<OnlineRoomEntry>{
+function rememberPlayer(handshake:RoomHandshakeResponse,inviteToken?:string):void{
+  const info=publicEntry(handshake);
+  // Discovery credentials and existing-player credentials remain separate.
+  // The private reconnect token is never put in invite/passcode/WebSocket URLs.
+  sessionStorage.setItem(tokenKey(handshake.roomId),handshake.playerToken);
+  sessionStorage.setItem(roomInfoKey(handshake.roomId),JSON.stringify(info));
+  if(inviteToken)sessionStorage.setItem(inviteRoomKey(inviteToken),handshake.roomId);
+}
+
+function readRememberedRoom(roomId:string):OnlineRoomEntry|null{
+  if(!sessionStorage.getItem(tokenKey(roomId)))return null;
+  const raw=sessionStorage.getItem(roomInfoKey(roomId));
+  if(!raw)return null;
+  try{
+    const value=JSON.parse(raw) as Partial<OnlineRoomEntry>;
+    if(value.roomId!==roomId||typeof value.inviteUrl!=='string'||typeof value.passcode!=='string')return null;
+    if(value.seat!=='sente'&&value.seat!=='gote')return null;
+    if(!Number.isSafeInteger(value.revision)||Number(value.revision)<0)return null;
+    return{roomId,inviteUrl:value.inviteUrl,passcode:value.passcode,seat:value.seat,revision:Number(value.revision)};
+  }catch{return null;}
+}
+
+export async function createOnlineRoom(base:string,handicap:Handicap):Promise<OnlineRoomEntry>{
   const requestId=crypto.randomUUID();
-  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId}));
+  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap}));
   rememberPlayer(handshake);
-  return{roomId:handshake.roomId,inviteUrl:handshake.inviteUrl,passcode:handshake.passcode};
+  return publicEntry(handshake);
 }
 
 export async function joinOnlineRoom(base:string,passcode:string):Promise<OnlineRoomEntry>{
-  const normalized=passcode.trim();
-  if(normalized.length<4||normalized.length>128)throw new Error('INVALID_PASSCODE');
+  const normalized=passcode.trim().toUpperCase();
+  if(normalized.length!==8)throw new Error('INVALID_PASSCODE');
   const requestId=crypto.randomUUID();
   const handshake=parseHandshake(await postJson(base,'/v1/rooms/join',{requestId,passcode:normalized}));
   rememberPlayer(handshake);
-  return{roomId:handshake.roomId,inviteUrl:handshake.inviteUrl,passcode:handshake.passcode};
+  return publicEntry(handshake);
 }
 
 export async function joinOnlineInvite(base:string,inviteToken:string):Promise<OnlineRoomEntry>{
   const normalized=inviteToken.trim();
-  if(normalized.length<8||normalized.length>512)throw new Error('INVALID_INVITE');
+  if(!/^[A-Za-z0-9_-]{24,128}$/.test(normalized))throw new Error('INVALID_INVITE');
+  const rememberedRoomId=sessionStorage.getItem(inviteRoomKey(normalized));
+  if(rememberedRoomId){
+    const remembered=readRememberedRoom(rememberedRoomId);
+    if(remembered)return remembered;
+  }
   const requestId=crypto.randomUUID();
   const handshake=parseHandshake(await postJson(base,'/v1/rooms/invite',{requestId,inviteToken:normalized}));
-  rememberPlayer(handshake);
-  return{roomId:handshake.roomId,inviteUrl:handshake.inviteUrl,passcode:handshake.passcode};
+  rememberPlayer(handshake,normalized);
+  return publicEntry(handshake);
 }
 
 export class OnlineMatchConnection {
   private socket:WebSocket|null=null;
   private currentRevision=-1;
   private authenticated=false;
+  private seat:Side|null=null;
   private readonly listeners=new Set<(event:OnlineEvent)=>void>();
 
   constructor(private readonly api:string,private readonly roomId:string){}
@@ -126,7 +161,7 @@ export class OnlineMatchConnection {
 
   connect():void{
     if(this.socket)return;
-    const playerToken=sessionStorage.getItem(storageKey(this.roomId));
+    const playerToken=sessionStorage.getItem(tokenKey(this.roomId));
     if(!playerToken)throw new Error('PLAYER_IDENTITY_MISSING');
     const base=new URL(apiBase(this.api));
     base.protocol=base.protocol==='https:'?'wss:':'ws:';
@@ -136,17 +171,20 @@ export class OnlineMatchConnection {
     this.socket=socket;
     this.authenticated=false;
     this.currentRevision=-1;
+    this.seat=null;
     socket.onopen=()=>{
       if(this.socket!==socket)return;
       socket.send(JSON.stringify({type:'authenticate',playerToken}));
     };
     socket.onmessage=event=>this.receive(event.data);
     socket.onerror=()=>this.emit({type:'error',code:'SOCKET_ERROR'});
-    socket.onclose=()=>{
+    socket.onclose=event=>{
       if(this.socket===socket){
         this.socket=null;
         this.authenticated=false;
         this.currentRevision=-1;
+        this.seat=null;
+        this.emit({type:'disconnected',code:event.code});
       }
     };
   }
@@ -156,12 +194,13 @@ export class OnlineMatchConnection {
     this.socket=null;
     this.authenticated=false;
     this.currentRevision=-1;
+    this.seat=null;
     socket?.close(1000,'client-close');
   }
 
   sendMove(move:Move):string{
     if(!this.socket||this.socket.readyState!==WebSocket.OPEN)throw new Error('SOCKET_NOT_READY');
-    if(!this.authenticated)throw new Error('PLAYER_NOT_AUTHENTICATED');
+    if(!this.authenticated||!this.seat)throw new Error('PLAYER_NOT_AUTHENTICATED');
     if(this.currentRevision<0)throw new Error('STATE_NOT_SYNCHRONIZED');
     const requestId=crypto.randomUUID();
     this.socket.send(JSON.stringify({type:'move',requestId,expectedRevision:this.currentRevision,move}));
@@ -179,11 +218,13 @@ export class OnlineMatchConnection {
     if(raw.length>1_000_000){this.emit({type:'error',code:'MESSAGE_TOO_LARGE'});return;}
     let value:unknown;
     try{value=JSON.parse(raw);}catch{this.emit({type:'error',code:'INVALID_JSON'});return;}
-    if(!value||typeof value!=='object'){this.emit({type:'error',code:'INVALID_MESSAGE'});return;}
+    if(!value||typeof value!=='object'||Array.isArray(value)){this.emit({type:'error',code:'INVALID_MESSAGE'});return;}
     const data=value as Record<string,unknown>;
     if(data.type==='authenticated'){
+      if(data.seat!=='sente'&&data.seat!=='gote'){this.emit({type:'error',code:'INVALID_SEAT'});return;}
       this.authenticated=true;
-      this.emit({type:'authenticated'});
+      this.seat=data.seat;
+      this.emit({type:'authenticated',seat:data.seat});
       this.requestState();
       return;
     }
@@ -207,6 +248,7 @@ export class OnlineMatchConnection {
     if(data.type==='auth-rejected'){
       this.authenticated=false;
       this.currentRevision=-1;
+      this.seat=null;
       this.emit({type:'error',code:'PLAYER_AUTH_REJECTED'});
       this.close();
       return;
@@ -218,27 +260,39 @@ export class OnlineMatchConnection {
 }
 
 function parseAuthoritativeState(value:unknown,expectedRoomId:string):AuthoritativeState|null{
-  if(!value||typeof value!=='object')return null;
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
   const data=value as Record<string,unknown>;
   if(data.roomId!==expectedRoomId)return null;
-  if(!Number.isSafeInteger(data.revision)||Number(data.revision)<0)return null;
+  const revision=Number(data.revision);
+  if(!Number.isSafeInteger(revision)||revision<0)return null;
   if(data.status!=='waiting'&&data.status!=='playing'&&data.status!=='ended')return null;
   if(!isPositionShape(data.position))return null;
+  const connections=parseConnections(data.connections);
+  if(!connections)return null;
   const winner=data.winner;
   if(winner!==undefined&&winner!=='sente'&&winner!=='gote')return null;
   if(data.resultReason!==undefined&&typeof data.resultReason!=='string')return null;
   return{
     roomId:expectedRoomId,
-    revision:Number(data.revision),
+    revision,
     position:data.position,
     status:data.status,
-    ...(winner?{winner}:{}) ,
-    ...(typeof data.resultReason==='string'?{resultReason:data.resultReason}:{}) ,
+    connections,
+    ...(winner?{winner}:{}),
+    ...(typeof data.resultReason==='string'?{resultReason:data.resultReason}:{}),
   };
 }
 
+function parseConnections(value:unknown):{sente:number;gote:number}|null{
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
+  const data=value as Record<string,unknown>;
+  const sente=Number(data.sente),gote=Number(data.gote);
+  if(!Number.isSafeInteger(sente)||!Number.isSafeInteger(gote)||sente<0||gote<0||sente>4||gote>4)return null;
+  return{sente,gote};
+}
+
 function isPositionShape(value:unknown):value is Position{
-  if(!value||typeof value!=='object')return false;
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
   const data=value as Partial<Position>;
   if(data.turn!=='sente'&&data.turn!=='gote')return false;
   if(!Number.isSafeInteger(data.ply)||Number(data.ply)<0)return false;
