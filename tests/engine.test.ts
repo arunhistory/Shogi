@@ -84,7 +84,7 @@ describe('shogi engine',()=>{
     resetHistory(p);
     const next=applyMove(p,{from:[4,4],to:[3,4]});
     expect(next.hands.sente.pawn).toBe(1);
-    expect(next.hands.sente.tokin).toBeUndefined();
+    expect('tokin' in next.hands.sente).toBe(false);
   });
 
   it('does not allow a move that exposes its own king to check',()=>{
