@@ -1,6 +1,9 @@
 import './style.css';
+import { fetchCloudContent } from './content/client';
+import type { CloudContentKey } from './content/client';
 import { applyMove, gameOutcome, initialPosition, isCheck, legalMoves, positionKey } from './game/engine';
 import type { CpuLevel, GameOutcome, Handicap, Mode, Move, PieceKind, Position, Side } from './game/types';
+import { audioController } from './media/audio';
 import {
   createOnlineRoom,
   joinOnlineInvite,
@@ -98,14 +101,75 @@ function settingsGame(modeValue:Mode){
 function rules(){
   cancelCpu();
   cancelOnline();
-  app.innerHTML=`<main class="document">${back()}<h2>ルール</h2><p>9×9の盤で、相手の玉を詰ませることが目的です。取った駒は持ち駒として自分の手番に打てます。敵陣3段では対象駒を成ることができ、歩・香・桂には行き所がなくなる場合の強制成りがあります。</p><p>二歩、打ち歩詰め、行き所のない駒打ち、自玉を王手にさらす着手、王手放置はできません。合法手のみ盤面に反映されます。</p><p>同一局面が4回現れた場合は千日手です。連続王手による千日手は王手を続けた側の敗北として通常の千日手と分けて判定します。入玉・持将棋の具体方式は設計上未確定のため、方式確定までは自動終局させません。</p></main>`;
+  app.innerHTML=`<main class="document rules-document">${back()}<h2>ルール</h2>
+    <section><h3>目的と盤</h3><p>将棋は9×9の盤を使い、交互に1手ずつ指します。通常対局では先手から開始し、相手の玉を詰ませることが目的です。王手そのものでは終局せず、王手を受ける合法手が一つもない「詰み」で勝敗が確定します。玉を実際に取って盤から除く着手は行いません。</p></section>
+    <section><h3>駒の種類と動き</h3><dl class="piece-rules"><dt>玉</dt><dd>縦・横・斜めの隣接1マス。王手されるマスには移動できません。</dd><dt>飛車</dt><dd>縦・横に何マスでも進めます。途中の駒は飛び越せません。</dd><dt>角</dt><dd>斜めに何マスでも進めます。途中の駒は飛び越せません。</dd><dt>金</dt><dd>前・左右・後ろ・前斜めの計6方向へ1マス。後ろ斜めには進めません。</dd><dt>銀</dt><dd>前1マスと、前後の斜め4方向へ1マス。</dd><dt>桂馬</dt><dd>前方へ2、左右へ1ずれた2地点へ跳びます。途中の駒を飛び越せます。</dd><dt>香車</dt><dd>前方へ何マスでも進めます。途中の駒は飛び越せません。</dd><dt>歩</dt><dd>前方へ1マス。</dd><dt>龍（成飛車）</dt><dd>飛車の動きに加え、斜め隣接1マスへ進めます。</dd><dt>馬（成角）</dt><dd>角の動きに加え、縦・横の隣接1マスへ進めます。</dd><dt>成銀・成桂・成香・と金</dt><dd>金と同じ動きになります。</dd></dl></section>
+    <section><h3>駒を取る・持ち駒・駒打ち</h3><p>移動先に相手の駒があればその駒を取り、自分の持ち駒にします。成駒を取った場合は成る前の駒に戻ります。持ち駒は自分の手番に空きマスへ打つことができ、打った手で手番を終えます。</p></section>
+    <section><h3>成り・不成・強制成り</h3><p>飛車、角、銀、桂、香、歩は、移動元または移動先が相手側の3段に含まれる着手で成ることを選べます。成れる場面でも、合法であれば不成を選べます。ただし、そのままでは次の手以降に一度も動けなくなる歩・香の最終段への移動、桂の最終2段への移動は必ず成ります。</p></section>
+    <section><h3>王手・詰み</h3><p>相手玉を次の手で取れる状態を王手と呼びます。王手された側は、玉を逃がす、王手している駒を取る、合駒をする等により必ず王手を解消しなければなりません。自玉を王手されたままにする着手、自ら王手される状態へ入る着手は不合法です。手番側が王手され、王手を解消する合法手が一つもなければ詰みとなり、その側の敗北です。</p></section>
+    <section><h3>主な禁じ手</h3><ul><li><strong>二歩:</strong> 同じ筋に自分の成っていない歩が既にある場合、その筋へ新たな歩を打てません。</li><li><strong>打ち歩詰め:</strong> 持ち駒の歩を打つ1手だけで相手玉を直ちに詰ませる着手はできません。</li><li><strong>行き所のない駒:</strong> 歩・香を最終段へ、桂を最終2段へ持ち駒から打つことはできません。</li><li><strong>王手放置・自玉を王手にさらす手:</strong> 着手後に自玉が王手されている状態になる手はできません。</li></ul><p>不合法な入力は盤面・持ち駒・手番・履歴へ一切反映せず、合法手だけを正式な着手として確定します。</p></section>
+    <section><h3>投了</h3><p>投了が正式に受理された場合は、投了した側の敗北として終局します。投了ボタン等の具体的なUIは現在の確定仕様に含まれていないため、本アプリでは未確定のまま保持します。</p></section>
+    <section><h3>千日手</h3><p>盤面、両者の持ち駒、手番がすべて同一の局面が4回現れた場合は千日手として通常の着手を終了し、指し直し対象として扱います。これは単なる手順の繰り返しではなく、同一局面の成立回数で判定します。</p></section>
+    <section><h3>連続王手の千日手</h3><p>千日手となる反復区間で一方が連続して毎回王手をかけ続けていた場合は通常の千日手と分け、王手を続けた側の敗北とします。</p></section>
+    <section><h3>入玉・持将棋</h3><p>玉が相手陣へ入っただけでは自動終局しません。入玉・持将棋は別途確定する判定方式・条件に従って処理する仕様ですが、その具体方式は現在未確定です。このため、未確定方式を本アプリ独自に作って自動終局させません。</p></section>
+    <section><h3>駒落ち</h3><p>平手のほか、飛車落ち、角落ち、2枚落ち、4枚落ち、6枚落ちを選べます。駒落ちでは上手（後手側）から指定駒を開始前に除き、上手から指し始めます。飛車落ちは飛車、角落ちは角、2枚落ちは飛車・角、4枚落ちは飛車・角・左右の香、6枚落ちはさらに左右の桂を除きます。</p></section>
+    <section><h3>全モード共通</h3><p>CPU対局、ローカル2人対局、オンライン対局で将棋ルールを変えません。オンラインではCloudflare側の正式局面が基準となり、クライアントが送った着手申告だけで盤面は変化しません。ブラウザ終了や通信切断だけを投了・詰み・敗北として扱いません。</p></section>
+  </main>`;
   bindBack();
 }
 function settings(){
   cancelCpu();
   cancelOnline();
-  app.innerHTML=`<main class="panel">${back()}<h2>設定</h2><label>BGM <input type="checkbox" disabled> ON</label><label>音量 <input type="range" min="0" max="100" value="70"></label><label>SE <input type="checkbox" disabled> ON</label><label>音量 <input type="range" min="0" max="100" value="70"></label><button disabled>利用規約</button><button disabled>クレジット</button><button disabled>ライセンス</button><p class="note">本文・素材は設計上Cloudflare側から後付けする構造です。</p></main>`;
+  const prefs=audioController.getPreferences();
+  app.innerHTML=`<main class="panel settings-panel">${back()}<h2>設定</h2><label class="setting-row"><span>BGM</span><input id="bgmEnabled" type="checkbox" ${prefs.bgmEnabled?'checked':''}></label><label class="setting-row"><span>BGM音量</span><input id="bgmVolume" type="range" min="0" max="100" value="${Math.round(prefs.bgmVolume*100)}"></label><label class="setting-row"><span>SE</span><input id="seEnabled" type="checkbox" ${prefs.seEnabled?'checked':''}></label><label class="setting-row"><span>SE音量</span><input id="seVolume" type="range" min="0" max="100" value="${Math.round(prefs.seVolume*100)}"></label><button data-content="terms">利用規約</button><button data-content="credits">クレジット</button><button data-content="licenses">ライセンス</button><p class="note">BGM・SE素材は外部manifestから読み込みます。素材が未登録でもゲームはそのまま動作します。</p></main>`;
   bindBack();
+  void audioController.initialize();
+  const bgmEnabled=document.querySelector<HTMLInputElement>('#bgmEnabled')!;
+  const bgmVolume=document.querySelector<HTMLInputElement>('#bgmVolume')!;
+  const seEnabled=document.querySelector<HTMLInputElement>('#seEnabled')!;
+  const seVolume=document.querySelector<HTMLInputElement>('#seVolume')!;
+  bgmEnabled.addEventListener('change',()=>void audioController.updatePreferences({bgmEnabled:bgmEnabled.checked}));
+  bgmVolume.addEventListener('input',()=>void audioController.updatePreferences({bgmVolume:Number(bgmVolume.value)/100}));
+  seEnabled.addEventListener('change',()=>void audioController.updatePreferences({seEnabled:seEnabled.checked}));
+  seVolume.addEventListener('input',()=>void audioController.updatePreferences({seVolume:Number(seVolume.value)/100}));
+  document.querySelectorAll<HTMLElement>('[data-content]').forEach(button=>button.addEventListener('click',()=>{
+    const key=button.dataset.content as CloudContentKey;
+    const title=key==='terms'?'利用規約':key==='credits'?'クレジット':'ライセンス';
+    void showCloudDocument(key,title);
+  }));
+}
+async function showCloudDocument(key:CloudContentKey,title:string){
+  cancelCpu();
+  cancelOnline();
+  app.innerHTML=`<main class="document">${back()}<h2>${escapeHtml(title)}</h2><p id="documentState">読み込み中…</p></main>`;
+  bindBack();
+  const state=document.querySelector('#documentState')!;
+  const api=onlineApi();
+  if(!api){state.textContent='Cloudflare接続先が未設定のため、本文を取得できません。';return;}
+  try{
+    const documentValue=await fetchCloudContent(api,key);
+    if(!documentValue.available){state.textContent='現在、本文は未登録です。';return;}
+    state.replaceWith(renderCloudBody(documentValue.body));
+  }catch{state.textContent='本文を取得できませんでした。';}
+}
+function renderCloudBody(body:unknown):HTMLElement{
+  const container=document.createElement('div');
+  container.className='cloud-document-body';
+  if(typeof body==='string'){
+    for(const line of body.split(/\n{2,}/)){
+      const p=document.createElement('p');p.textContent=line;container.append(p);
+    }
+    return container;
+  }
+  if(Array.isArray(body)&&body.every(item=>typeof item==='string')){
+    const list=document.createElement('ul');
+    for(const item of body){const li=document.createElement('li');li.textContent=item;list.append(li);}
+    container.append(list);return container;
+  }
+  const pre=document.createElement('pre');
+  try{pre.textContent=JSON.stringify(body,null,2);}catch{pre.textContent='表示できない形式です。';}
+  container.append(pre);
+  return container;
 }
 function onlineApi():string|null{
   const value=(import.meta.env.VITE_SHOGI_API_URL as string|undefined)?.trim();
@@ -155,11 +219,13 @@ function connectOnlineRoom(api:string,room:OnlineRoomEntry){
       return;
     }
     if(event.type==='state'){
+      const previousPly=onlineState?.position.ply??event.state.position.ply;
       onlineState=event.state;
       pos=event.state.position;
       onlinePendingMove=false;
       onlineMessage='';
       resetInteraction();
+      if(event.state.position.ply>previousPly)void audioController.playSe('move');
       play();
       return;
     }
@@ -276,6 +342,7 @@ function clickSquare(y:number,x:number,moves:Move[]){
       return;
     }
     pos=applyMove(pos,move);
+    void audioController.playSe('move');
     resetInteraction();
     play();
     maybeStartCpu();
@@ -310,6 +377,7 @@ function maybeStartCpu(){
     cpuRequestId=null;
     if(!event.data.ok||!event.data.result?.move||event.data.positionKey!==sourceKey||positionKey(pos)!==sourceKey){play();return;}
     try{pos=applyMove(pos,event.data.result.move);}catch{play();return;}
+    void audioController.playSe('move');
     resetInteraction();
     play();
   };
@@ -319,6 +387,7 @@ function maybeStartCpu(){
 }
 
 async function start(){
+  void audioController.initialize();
   const invite=new URL(location.href).searchParams.get('invite')?.trim();
   if(!invite){menu();return;}
   const api=onlineApi();
