@@ -248,7 +248,7 @@ export class OnlineMatchConnection {
     base.protocol=base.protocol==='https:'?'wss:':'ws:';
     base.pathname=`${base.pathname.replace(/\/$/,'')}/v1/rooms/${encodeURIComponent(this.roomId)}/socket`;
     base.search='';
-    const socket=new WebSocket(base);
+    const socket=new WebSocket(base,['shogi-v1',`player.${playerToken}`]);
     this.socket=socket;
     this.authenticated=false;
     this.currentRevision=-1;
