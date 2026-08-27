@@ -1,3 +1,4 @@
+import { positionKey } from '../game/engine';
 import type { Handicap, Move, Position, Side } from '../game/types';
 
 export interface OnlineRoomEntry {
@@ -33,6 +34,12 @@ const inviteRoomKey=(inviteToken:string)=>`shogi:invite:${inviteToken}:room`;
 const passcodeRoomKey=(passcode:string)=>`shogi:passcode:${passcode}:room`;
 const pendingOperationKey=(kind:string)=>`shogi:pending-operation:${kind}`;
 const activeRoomKey='shogi:active-room';
+const roomIdPattern=/^[A-Za-z0-9_-]{16,128}$/;
+const playerTokenPattern=/^[A-Za-z0-9_-]{32,128}$/;
+const passcodePattern=/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/;
+const boardKinds=new Set(['king','rook','bishop','gold','silver','knight','lance','pawn','dragon','horse','promotedSilver','promotedKnight','promotedLance','tokin']);
+const handKinds=['king','rook','bishop','gold','silver','knight','lance','pawn'] as const;
+const terminalReasons=new Set(['mate','repetition','perpetual-check']);
 
 function apiBase(value:string):string{
   const url=new URL(value);
@@ -57,15 +64,21 @@ function parseHandshake(value:unknown):RoomHandshakeResponse{
   if(seat!=='sente'&&seat!=='gote')throw new Error('INVALID_SEAT');
   const revision=Number(data.revision);
   if(!Number.isSafeInteger(revision)||revision<0)throw new Error('INVALID_REVISION');
+  const roomId=assertString(data.roomId,'ROOM_ID',128);
+  const passcode=assertString(data.passcode,'PASSCODE',8).toUpperCase();
+  const playerToken=assertString(data.playerToken,'PLAYER_TOKEN',128);
+  if(!roomIdPattern.test(roomId))throw new Error('INVALID_ROOM_ID');
+  if(!passcodePattern.test(passcode))throw new Error('INVALID_PASSCODE');
+  if(!playerTokenPattern.test(playerToken))throw new Error('INVALID_PLAYER_TOKEN');
   const inviteUrl=assertString(data.inviteUrl,'INVITE_URL',2048);
   const parsedInvite=new URL(inviteUrl,location.href);
   if(parsedInvite.protocol!=='https:'&&parsedInvite.protocol!=='http:')throw new Error('INVALID_INVITE_URL');
   if(parsedInvite.origin!==location.origin)throw new Error('INVALID_INVITE_ORIGIN');
   return{
-    roomId:assertString(data.roomId,'ROOM_ID',128),
+    roomId,
     inviteUrl:parsedInvite.toString(),
-    passcode:assertString(data.passcode,'PASSCODE',128),
-    playerToken:assertString(data.playerToken,'PLAYER_TOKEN',512),
+    passcode,
+    playerToken,
     seat,
     revision,
   };
@@ -146,9 +159,10 @@ function readRememberedRoom(roomId:string):OnlineRoomEntry|null{
   if(!raw)return null;
   try{
     const value=JSON.parse(raw) as Partial<OnlineRoomEntry>;
-    if(value.roomId!==roomId||typeof value.inviteUrl!=='string'||typeof value.passcode!=='string')return null;
+    if(value.roomId!==roomId||!roomIdPattern.test(roomId)||typeof value.inviteUrl!=='string'||typeof value.passcode!=='string')return null;
     if(value.seat!=='sente'&&value.seat!=='gote')return null;
     if(!Number.isSafeInteger(value.revision)||Number(value.revision)<0)return null;
+    if(!passcodePattern.test(value.passcode.trim().toUpperCase()))return null;
     return{roomId,inviteUrl:value.inviteUrl,passcode:value.passcode,seat:value.seat,revision:Number(value.revision)};
   }catch{return null;}
 }
@@ -173,7 +187,7 @@ export async function createOnlineRoom(base:string,handicap:Handicap):Promise<On
 
 export async function joinOnlineRoom(base:string,passcode:string):Promise<OnlineRoomEntry>{
   const normalized=passcode.trim().toUpperCase();
-  if(normalized.length!==8)throw new Error('INVALID_PASSCODE');
+  if(!passcodePattern.test(normalized))throw new Error('INVALID_PASSCODE');
   const rememberedRoomId=sessionStorage.getItem(passcodeRoomKey(normalized));
   if(rememberedRoomId){
     const remembered=readRememberedRoom(rememberedRoomId);
@@ -229,7 +243,7 @@ export class OnlineMatchConnection {
   connect():void{
     if(this.socket)return;
     const playerToken=sessionStorage.getItem(tokenKey(this.roomId));
-    if(!playerToken)throw new Error('PLAYER_IDENTITY_MISSING');
+    if(!playerToken||!playerTokenPattern.test(playerToken))throw new Error('PLAYER_IDENTITY_MISSING');
     const base=new URL(apiBase(this.api));
     base.protocol=base.protocol==='https:'?'wss:':'ws:';
     base.pathname=`${base.pathname.replace(/\/$/,'')}/v1/rooms/${encodeURIComponent(this.roomId)}/socket`;
@@ -298,7 +312,8 @@ export class OnlineMatchConnection {
     if(data.type==='state'){
       if(!this.authenticated){this.emit({type:'error',code:'STATE_BEFORE_AUTH'});return;}
       const state=parseAuthoritativeState(data.state,this.roomId);
-      if(!state||state.revision<this.currentRevision)return;
+      if(!state){this.emit({type:'error',code:'INVALID_STATE'});return;}
+      if(state.revision<this.currentRevision)return;
       this.currentRevision=state.revision;
       this.emit({type:'state',state});
       return;
@@ -326,7 +341,8 @@ export class OnlineMatchConnection {
   private emit(event:OnlineEvent):void{for(const listener of this.listeners)listener(event);}
 }
 
-function parseAuthoritativeState(value:unknown,expectedRoomId:string):AuthoritativeState|null{
+export function parseAuthoritativeState(value:unknown,expectedRoomId:string):AuthoritativeState|null{
+  if(!roomIdPattern.test(expectedRoomId))return null;
   if(!value||typeof value!=='object'||Array.isArray(value))return null;
   const data=value as Record<string,unknown>;
   if(data.roomId!==expectedRoomId)return null;
@@ -338,7 +354,14 @@ function parseAuthoritativeState(value:unknown,expectedRoomId:string):Authoritat
   if(!connections)return null;
   const winner=data.winner;
   if(winner!==undefined&&winner!=='sente'&&winner!=='gote')return null;
-  if(data.resultReason!==undefined&&typeof data.resultReason!=='string')return null;
+  const resultReason=data.resultReason;
+  if(resultReason!==undefined&&(typeof resultReason!=='string'||!terminalReasons.has(resultReason)))return null;
+  if(data.status==='ended'){
+    if(typeof resultReason!=='string')return null;
+    if(resultReason==='repetition'){
+      if(winner!==undefined)return null;
+    }else if(winner!=='sente'&&winner!=='gote')return null;
+  }else if(winner!==undefined||resultReason!==undefined)return null;
   return{
     roomId:expectedRoomId,
     revision,
@@ -346,7 +369,7 @@ function parseAuthoritativeState(value:unknown,expectedRoomId:string):Authoritat
     status:data.status,
     connections,
     ...(winner?{winner}:{}),
-    ...(typeof data.resultReason==='string'?{resultReason:data.resultReason}:{}),
+    ...(typeof resultReason==='string'?{resultReason}:{}),
   };
 }
 
@@ -354,8 +377,44 @@ function parseConnections(value:unknown):{sente:number;gote:number}|null{
   if(!value||typeof value!=='object'||Array.isArray(value))return null;
   const data=value as Record<string,unknown>;
   const sente=Number(data.sente),gote=Number(data.gote);
-  if(!Number.isSafeInteger(sente)||!Number.isSafeInteger(gote)||sente<0||gote<0||sente>4||gote>4)return null;
+  if(!Number.isSafeInteger(sente)||!Number.isSafeInteger(gote)||sente<0||gote<0||sente>8||gote>8||sente+gote>8)return null;
   return{sente,gote};
+}
+
+function isPieceShape(value:unknown):boolean{
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const data=value as Record<string,unknown>;
+  return (data.side==='sente'||data.side==='gote')&&typeof data.kind==='string'&&boardKinds.has(data.kind);
+}
+
+function isHandsShape(value:unknown):boolean{
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const hands=value as Record<string,unknown>;
+  for(const side of ['sente','gote'] as const){
+    const sideValue=hands[side];
+    if(!sideValue||typeof sideValue!=='object'||Array.isArray(sideValue))return false;
+    const counts=sideValue as Record<string,unknown>;
+    const keys=Object.keys(counts);
+    if(keys.length!==handKinds.length||keys.some(key=>!handKinds.includes(key as typeof handKinds[number])))return false;
+    for(const kind of handKinds){
+      const count=Number(counts[kind]);
+      if(!Number.isSafeInteger(count)||count<0||count>40)return false;
+      if(kind==='king'&&count!==0)return false;
+    }
+  }
+  return true;
+}
+
+function isHistoryShape(value:unknown,ply:number):boolean{
+  if(!Array.isArray(value)||value.length!==ply+1||value.length<1)return false;
+  for(const entry of value){
+    if(!entry||typeof entry!=='object'||Array.isArray(entry))return false;
+    const data=entry as Record<string,unknown>;
+    if(typeof data.key!=='string'||data.key.length===0||data.key.length>20_000)return false;
+    if(data.mover!==null&&data.mover!=='sente'&&data.mover!=='gote')return false;
+    if(typeof data.gaveCheck!=='boolean')return false;
+  }
+  return true;
 }
 
 function isPositionShape(value:unknown):value is Position{
@@ -363,9 +422,17 @@ function isPositionShape(value:unknown):value is Position{
   const data=value as Partial<Position>;
   if(data.turn!=='sente'&&data.turn!=='gote')return false;
   if(!Number.isSafeInteger(data.ply)||Number(data.ply)<0)return false;
+  const ply=Number(data.ply);
   if(!Array.isArray(data.board)||data.board.length!==9)return false;
-  if(!data.board.every(row=>Array.isArray(row)&&row.length===9))return false;
-  if(!data.hands||typeof data.hands!=='object')return false;
-  if(!Array.isArray(data.history))return false;
+  if(!data.board.every(row=>Array.isArray(row)&&row.length===9&&row.every(cell=>cell===null||isPieceShape(cell))))return false;
+  if(!isHandsShape(data.hands))return false;
+  if(!isHistoryShape(data.history,ply))return false;
+  let senteKings=0,goteKings=0;
+  for(const row of data.board)for(const cell of row){
+    if(cell?.kind==='king')cell.side==='sente'?senteKings++:goteKings++;
+  }
+  if(senteKings!==1||goteKings!==1)return false;
+  const position=data as Position;
+  if(position.history[position.history.length-1]?.key!==positionKey(position))return false;
   return true;
 }
