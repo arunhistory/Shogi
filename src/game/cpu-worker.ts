@@ -1,8 +1,8 @@
 /// <reference lib="webworker" />
 import { chooseCpuMove } from './cpu';
-import { applyMove, gameOutcome, isCheck, legalMoves, positionKey } from './engine';
+import { applyMove, gameOutcome, isCheck, legalMoves, positionKey, repetitionStatus } from './engine';
 import { loadWasmShogiEngine } from './wasm';
-import type { CpuLevel, Move, Position } from './types';
+import type { CpuLevel, Move, Position, RepetitionStatus } from './types';
 import type { WasmShogiEngine } from './wasm';
 
 interface CpuRequest {
@@ -70,6 +70,12 @@ function moveKey(move:Move):string{
   return `${move.from?.[0]??-1},${move.from?.[1]??-1}>${move.to[0]},${move.to[1]}|${move.drop??''}|${move.promote?1:0}`;
 }
 
+function sameRepetition(a:RepetitionStatus,b:RepetitionStatus):boolean{
+  if(a.kind!==b.kind)return false;
+  if(a.kind==='perpetual-check'&&b.kind==='perpetual-check')return a.loser===b.loser;
+  return true;
+}
+
 function assertWasmRootParity(engine:WasmShogiEngine,position:Position,officialLegal:Move[]):void{
   if(engine.isCheck(position,position.turn)!==isCheck(position,position.turn)){
     throw new Error('WASM_CHECK_MISMATCH');
@@ -78,6 +84,9 @@ function assertWasmRootParity(engine:WasmShogiEngine,position:Position,officialL
   const observed=engine.legalMoves(position).map(moveKey).sort();
   if(expected.length!==observed.length||expected.some((value,index)=>value!==observed[index])){
     throw new Error('WASM_LEGAL_SET_MISMATCH');
+  }
+  if(!sameRepetition(engine.repetitionStatus(position),repetitionStatus(position))){
+    throw new Error('WASM_REPETITION_MISMATCH');
   }
 }
 
@@ -91,9 +100,9 @@ function searchWithWasm(engine:WasmShogiEngine,position:Position,level:CpuLevel)
   const verified=officialLegal.find(move=>sameMove(move,searched.move!));
   if(!verified)throw new Error('WASM_SEARCH_RETURNED_ILLEGAL_MOVE');
 
-  // The C++ ABI currently serializes board/hands/turn, not the complete prior
-  // repetition history. Never accept an immediately losing perpetual-check
-  // choice when the shared authoritative rules can already identify it.
+  // Final adoption still goes through the shared authoritative rules even though
+  // the C++ search now receives repetition history. This preserves a second,
+  // independent safety boundary around the high-load search engine.
   const outcome=gameOutcome(applyMove(position,verified));
   if(outcome.ended&&outcome.reason==='perpetual-check'&&outcome.loser===position.turn){
     throw new Error('WASM_CHOSE_IMMEDIATE_PERPETUAL_CHECK_LOSS');
@@ -121,8 +130,8 @@ self.onmessage=async(event:MessageEvent<CpuRequest>)=>{
         return;
       }catch{
         // Never adopt a WASM result whose rule boundary differs from the shared
-        // authoritative TypeScript engine. Availability is preserved by the
-        // independent pure-algorithm TypeScript search fallback.
+        // authoritative TypeScript engine. Capacity or ABI mismatch also safely
+        // falls back without imposing any rule limit on the game itself.
       }
     }
     const result=chooseCpuMove(position,level);
