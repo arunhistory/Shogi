@@ -39,7 +39,7 @@ jobs:
       - name: Stage Cloudflare deployment bundle
         run: |
           mkdir -p public/deploy
-          cp cloudflare/dist/index.js public/deploy/shogi-system.js
+          cp cloudflare/dist/index-v2.js public/deploy/shogi-system.js
       - run: npm install
       - run: npm test
       - run: npm run build
