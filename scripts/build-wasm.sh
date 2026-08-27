@@ -6,7 +6,6 @@ emcc cpp/engine.cpp \
   -s WASM=1 \
   -s STANDALONE_WASM=1 \
   --no-entry \
-  -Wl,--export-memory \
   -Wl,--export=shogi_engine_version \
   -Wl,--export=shogi_input_buffer \
   -Wl,--export=shogi_input_capacity \
