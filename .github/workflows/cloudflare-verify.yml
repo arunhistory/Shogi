@@ -41,7 +41,16 @@ jobs:
       - name: Verify compiled Wasm is present in dry-run artifact
         run: |
           test -s cloudflare/src/shogi_engine.wasm
-          find cloudflare/dist -type f -maxdepth 2 -print
+          test -s cloudflare/dist/index-v2.js
+          test "$(find cloudflare/dist -maxdepth 1 -type f -name '*-shogi_engine.wasm' | wc -l)" -eq 1
+          grep -q './[a-f0-9]\{40\}-shogi_engine\.wasm' cloudflare/dist/index-v2.js
+          find cloudflare/dist -maxdepth 1 -type f -print
+      - name: Stage and verify Pages deployment manifest
+        run: |
+          node cloudflare/scripts/stage-deploy.mjs
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('public/deploy/manifest.json','utf8'));if(m.version!==2||m.service!=='shogi-system'||m.githubCommit!==process.env.GITHUB_SHA||m.mainModule?.name!=='index-v2.js'||!Array.isArray(m.modules)||m.modules.length!==1||!/^[a-f0-9]{40}-shogi_engine\\.wasm$/.test(m.modules[0].name)||m.mainModule.contentType!=='application/javascript+module'||m.modules[0].contentType!=='application/wasm'||m.mainModule.sha256.length!==64||m.modules[0].sha256.length!==64)process.exit(1)"
+          test -s public/deploy/index-v2.js
+          test -s "public/deploy/$(node -p \"require('./public/deploy/manifest.json').modules[0].name\")"
       - name: Run local Durable Objects E2E
         working-directory: cloudflare
         run: |
