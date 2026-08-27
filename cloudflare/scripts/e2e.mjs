@@ -156,11 +156,12 @@ async function main(){
   const goteState=await gote.inbox.until(v=>v.type==='state');
   assert.equal(goteState.state.revision,1);
 
-  const oldSenteClosed=waitForClose(sente1.socket);
   const sente2=await openSocket(created.data.roomId,created.data.playerToken);
   assert.equal((await sente2.inbox.until(v=>v.type==='authenticated')).seat,'sente');
-  assert.equal((await oldSenteClosed).code,4001,'reconnect must replace the previous same-seat socket');
-  await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===1);
+  const secondSenteState=await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===1&&v.state.connections.sente===2);
+  assert.equal(secondSenteState.state.connections.gote,1);
+  const firstSenteSeesSecond=await sente1.inbox.until(v=>v.type==='state'&&v.state.revision===1&&v.state.connections.sente===2);
+  assert.equal(firstSenteSeesSecond.state.connections.gote,1);
 
   sente2.socket.send(JSON.stringify({
     type:'move',requestId:'move-stale-0001',expectedRevision:0,
@@ -174,23 +175,27 @@ async function main(){
     type:'move',requestId:'move-e2e-0001',expectedRevision:1,
     move:{from:[6,4],to:[5,4]},
   };
+  sente1.socket.send(JSON.stringify(legalMessage));
   sente2.socket.send(JSON.stringify(legalMessage));
-  const afterMove=await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===2);
-  assert.equal(afterMove.state.position.ply,1);
-  assert.equal(afterMove.state.position.turn,'gote');
-  assert.equal(afterMove.state.position.board[6][4],null);
-  assert.equal(afterMove.state.position.board[5][4].kind,'pawn');
+  const afterMove1=await sente1.inbox.until(v=>v.type==='state'&&v.state.revision===2);
+  const afterMove2=await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===2);
+  for(const afterMove of [afterMove1,afterMove2]){
+    assert.equal(afterMove.state.position.ply,1,'same-seat duplicate request must apply only once');
+    assert.equal(afterMove.state.position.turn,'gote');
+    assert.equal(afterMove.state.position.board[6][4],null);
+    assert.equal(afterMove.state.position.board[5][4].kind,'pawn');
+  }
   await gote.inbox.until(v=>v.type==='state'&&v.state.revision===2);
 
   sente2.socket.send(JSON.stringify(legalMessage));
   const duplicate=await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===2);
   assert.equal(duplicate.state.position.ply,1,'duplicate request must not apply twice');
 
-  sente2.socket.send(JSON.stringify({
+  sente1.socket.send(JSON.stringify({
     ...legalMessage,
     move:{from:[6,3],to:[5,3]},
   }));
-  const conflict=await sente2.inbox.until(v=>v.type==='rejected'&&v.requestId==='move-e2e-0001');
+  const conflict=await sente1.inbox.until(v=>v.type==='rejected'&&v.requestId==='move-e2e-0001');
   assert.equal(conflict.code,'REQUEST_ID_CONFLICT');
   assert.equal(conflict.revision,2);
 
@@ -201,6 +206,7 @@ async function main(){
   const afterDisconnect=await disconnectedState;
   assert.equal(afterDisconnect.state.status,'playing','disconnect must not become a loss');
   assert.equal(afterDisconnect.state.revision,2);
+  assert.equal(afterDisconnect.state.connections.sente,2,'same-seat multiconnection remains one player identity with two live sockets');
 
   const invalid=await openSocket(created.data.roomId,'x'.repeat(43));
   const invalidClosed=waitForClose(invalid.socket);
@@ -208,9 +214,10 @@ async function main(){
   assert.equal(authRejected.type,'auth-rejected');
   assert.equal((await invalidClosed).code,4003);
 
-  const finalClose=waitForClose(sente2.socket);
+  const finalCloses=[waitForClose(sente1.socket),waitForClose(sente2.socket)];
+  sente1.socket.close(1000,'done');
   sente2.socket.close(1000,'done');
-  await finalClose;
+  await Promise.all(finalCloses);
   console.log('Cloudflare authoritative room E2E: PASS');
 }
 
