@@ -3,6 +3,8 @@ set -eu
 mkdir -p public/wasm
 emcc cpp/engine.cpp \
   -O3 \
+  -std=c++17 \
+  -include initializer_list \
   -s WASM=1 \
   -s STANDALONE_WASM=1 \
   --no-entry \
