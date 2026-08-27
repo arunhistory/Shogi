@@ -11,4 +11,11 @@ emcc cpp/engine.cpp \
   -Wl,--export=shogi_input_capacity \
   -Wl,--export=shogi_evaluate_material_codes \
   -Wl,--export=shogi_evaluate_material \
+  -Wl,--export=shogi_evaluate_position \
+  -Wl,--export=shogi_legal_move_count \
+  -Wl,--export=shogi_legal_move_at \
+  -Wl,--export=shogi_is_check \
+  -Wl,--export=shogi_is_mate \
+  -Wl,--export=shogi_search_best_move \
+  -Wl,--export=shogi_nodes_searched \
   -o public/wasm/shogi_engine.wasm
