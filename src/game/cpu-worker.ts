@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { chooseCpuMove } from './cpu';
-import { legalMoves, positionKey } from './engine';
+import { applyMove, gameOutcome, isCheck, legalMoves, positionKey } from './engine';
 import { loadWasmShogiEngine } from './wasm';
 import type { CpuLevel, Move, Position } from './types';
 import type { WasmShogiEngine } from './wasm';
@@ -66,14 +66,39 @@ function sameMove(a:Move,b:Move):boolean{
     &&!!a.promote===!!b.promote;
 }
 
+function moveKey(move:Move):string{
+  return `${move.from?.[0]??-1},${move.from?.[1]??-1}>${move.to[0]},${move.to[1]}|${move.drop??''}|${move.promote?1:0}`;
+}
+
+function assertWasmRootParity(engine:WasmShogiEngine,position:Position,officialLegal:Move[]):void{
+  if(engine.isCheck(position,position.turn)!==isCheck(position,position.turn)){
+    throw new Error('WASM_CHECK_MISMATCH');
+  }
+  const expected=officialLegal.map(moveKey).sort();
+  const observed=engine.legalMoves(position).map(moveKey).sort();
+  if(expected.length!==observed.length||expected.some((value,index)=>value!==observed[index])){
+    throw new Error('WASM_LEGAL_SET_MISMATCH');
+  }
+}
+
 function searchWithWasm(engine:WasmShogiEngine,position:Position,level:CpuLevel):CpuResult{
   const officialLegal=legalMoves(position);
+  assertWasmRootParity(engine,position,officialLegal);
   if(officialLegal.length===0)return{move:null,completedDepth:0,nodesVisited:0};
   const limits=WASM_LIMITS[level];
   const searched=engine.searchBestMove(position,limits.maxDepth,limits.nodeLimit);
   if(!searched.move)throw new Error('WASM_SEARCH_RETURNED_NO_MOVE');
   const verified=officialLegal.find(move=>sameMove(move,searched.move!));
   if(!verified)throw new Error('WASM_SEARCH_RETURNED_ILLEGAL_MOVE');
+
+  // The C++ ABI currently serializes board/hands/turn, not the complete prior
+  // repetition history. Never accept an immediately losing perpetual-check
+  // choice when the shared authoritative rules can already identify it.
+  const outcome=gameOutcome(applyMove(position,verified));
+  if(outcome.ended&&outcome.reason==='perpetual-check'&&outcome.loser===position.turn){
+    throw new Error('WASM_CHOSE_IMMEDIATE_PERPETUAL_CHECK_LOSS');
+  }
+
   return{
     move:verified,
     // The C++ engine uses iterative deepening internally. Exact last completed depth
@@ -95,8 +120,9 @@ self.onmessage=async(event:MessageEvent<CpuRequest>)=>{
         self.postMessage(response);
         return;
       }catch{
-        // Never adopt an invalid WASM result. Fall back to the independently
-        // validated TypeScript implementation for availability and safety.
+        // Never adopt a WASM result whose rule boundary differs from the shared
+        // authoritative TypeScript engine. Availability is preserved by the
+        // independent pure-algorithm TypeScript search fallback.
       }
     }
     const result=chooseCpuMove(position,level);
