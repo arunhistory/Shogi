@@ -34,6 +34,6 @@ function decorateBoard():void{
 
 if(app){
   const observer=new MutationObserver(()=>decorateBoard());
-  observer.observe(app,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
+  observer.observe(app,{subtree:true,childList:true});
   decorateBoard();
 }
