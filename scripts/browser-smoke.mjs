@@ -23,6 +23,18 @@ function findChrome(){
   throw new Error('CHROME_NOT_FOUND');
 }
 
+async function stopChild(child){
+  if(!child||child.exitCode!==null)return;
+  const exited=new Promise(resolve=>child.once('exit',resolve));
+  child.kill('SIGTERM');
+  await Promise.race([exited,delay(2000)]);
+  if(child.exitCode===null){
+    const killed=new Promise(resolve=>child.once('exit',resolve));
+    child.kill('SIGKILL');
+    await Promise.race([killed,delay(2000)]);
+  }
+}
+
 async function waitForHttp(url,timeoutMs=20_000){
   const deadline=Date.now()+timeoutMs;
   let lastError=null;
@@ -255,7 +267,7 @@ try{
   console.log(JSON.stringify({ok:true,desktop:true,mobile:true,localMove:true,cpuWorker:true}));
 }finally{
   cdp?.close();
-  chrome?.kill('SIGTERM');
-  preview?.kill('SIGTERM');
-  await rm(profile,{recursive:true,force:true});
+  await stopChild(chrome);
+  await stopChild(preview);
+  await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }
