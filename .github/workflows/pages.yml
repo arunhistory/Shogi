@@ -43,6 +43,8 @@ jobs:
       - run: npm install
       - run: npm test
       - run: npm run build
+      - name: Browser smoke test
+        run: npm run test:browser
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
