@@ -109,16 +109,35 @@ function completeOperation(key:string):void{
   sessionStorage.removeItem(pendingOperationKey(key));
 }
 
-function rememberPlayer(handshake:RoomHandshakeResponse,inviteToken?:string):void{
+function inviteTokenFromUrl(inviteUrl:string):string|null{
+  try{
+    const token=new URL(inviteUrl,location.href).searchParams.get('invite')?.trim()??'';
+    return /^[A-Za-z0-9_-]{24,128}$/.test(token)?token:null;
+  }catch{return null;}
+}
+
+function persistReconnectRoute(inviteToken:string):void{
+  const current=new URL(location.href);
+  current.searchParams.set('invite',inviteToken);
+  history.replaceState(null,'',current);
+}
+
+function rememberPlayer(handshake:RoomHandshakeResponse,explicitInviteToken?:string):void{
   const info=publicEntry(handshake);
   const normalizedPasscode=handshake.passcode.trim().toUpperCase();
+  const inviteToken=explicitInviteToken??inviteTokenFromUrl(handshake.inviteUrl);
   // Discovery credentials and existing-player credentials remain separate.
   // The private reconnect token is never put in invite/passcode/WebSocket URLs.
   sessionStorage.setItem(tokenKey(handshake.roomId),handshake.playerToken);
   sessionStorage.setItem(roomInfoKey(handshake.roomId),JSON.stringify(info));
   sessionStorage.setItem(passcodeRoomKey(normalizedPasscode),handshake.roomId);
   sessionStorage.setItem(activeRoomKey,handshake.roomId);
-  if(inviteToken)sessionStorage.setItem(inviteRoomKey(inviteToken),handshake.roomId);
+  if(inviteToken){
+    sessionStorage.setItem(inviteRoomKey(inviteToken),handshake.roomId);
+    // The URL only carries the public room-discovery token. On reload, the client
+    // combines it with the separately stored private player token to reclaim the same seat.
+    persistReconnectRoute(inviteToken);
+  }
 }
 
 function readRememberedRoom(roomId:string):OnlineRoomEntry|null{
@@ -158,7 +177,12 @@ export async function joinOnlineRoom(base:string,passcode:string):Promise<Online
   const rememberedRoomId=sessionStorage.getItem(passcodeRoomKey(normalized));
   if(rememberedRoomId){
     const remembered=readRememberedRoom(rememberedRoomId);
-    if(remembered){sessionStorage.setItem(activeRoomKey,remembered.roomId);return remembered;}
+    if(remembered){
+      sessionStorage.setItem(activeRoomKey,remembered.roomId);
+      const inviteToken=inviteTokenFromUrl(remembered.inviteUrl);
+      if(inviteToken)persistReconnectRoute(inviteToken);
+      return remembered;
+    }
   }
   const op=`join-passcode:${normalized}`;
   const requestId=operationRequestId(op);
@@ -174,7 +198,11 @@ export async function joinOnlineInvite(base:string,inviteToken:string):Promise<O
   const rememberedRoomId=sessionStorage.getItem(inviteRoomKey(normalized));
   if(rememberedRoomId){
     const remembered=readRememberedRoom(rememberedRoomId);
-    if(remembered){sessionStorage.setItem(activeRoomKey,remembered.roomId);return remembered;}
+    if(remembered){
+      sessionStorage.setItem(activeRoomKey,remembered.roomId);
+      persistReconnectRoute(normalized);
+      return remembered;
+    }
   }
   const op=`join-invite:${normalized}`;
   const requestId=operationRequestId(op);
