@@ -14,6 +14,7 @@ import {
   roomIdPattern,
   roomStub,
 } from './runtime/common';
+import { websocketPlayerToken } from './runtime/socket-auth';
 import { ShogiDirectory } from './runtime/directory';
 import { ShogiRoom } from './runtime/room';
 import { ShogiContent } from './runtime/content';
@@ -76,6 +77,7 @@ async function workerFetch(request:Request,env:Env):Promise<Response>{
     if(request.headers.get('upgrade')?.toLowerCase()!=='websocket')return errorJson('WEBSOCKET_REQUIRED',426,cors);
     const roomId=socketMatch[1]!;
     if(!roomIdPattern.test(roomId))return errorJson('INVALID_ROOM_ID',400,cors);
+    if(!websocketPlayerToken(request.headers))return errorJson('PLAYER_AUTH_REQUIRED',401,cors);
     return roomStub(env,roomId).fetch(new Request('https://internal/socket',{headers:request.headers}));
   }
 
