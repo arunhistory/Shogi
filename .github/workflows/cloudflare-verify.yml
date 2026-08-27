@@ -28,3 +28,10 @@ jobs:
       - name: Bundle Worker without deployment
         working-directory: cloudflare
         run: npm run build
+      - name: Preserve verified deployment bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: shogi-cloudflare-bundle
+          path: cloudflare/dist/
+          if-no-files-found: error
+          retention-days: 1
