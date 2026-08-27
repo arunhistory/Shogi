@@ -63,6 +63,13 @@ export async function applyVisualAssets():Promise<void>{
   if(!manifest)return;
   const byId=new Map(manifest.visuals.map(item=>[item.id,item.url]));
   const root=document.documentElement;
+
+  // Every valid visual entry becomes a CSS variable. Future illustration or UI
+  // slots can consume a newly added manifest id without changing this loader.
+  for(const item of manifest.visuals){
+    root.style.setProperty(`--shogi-asset-${item.id}`,cssUrl(item.url));
+  }
+
   const cssSlots:Record<string,string>={
     'menu-background':'--shogi-menu-background',
     'game-background':'--shogi-game-background',
