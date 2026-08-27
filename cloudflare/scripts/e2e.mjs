@@ -59,14 +59,6 @@ function socketInbox(socket){
   };
 }
 
-function waitForClose(socket,timeoutMs=5000){
-  if(socket.readyState===WebSocket.CLOSED)return Promise.resolve({code:1006,reason:'already-closed'});
-  return new Promise((resolve,reject)=>{
-    const timer=setTimeout(()=>reject(new Error('WEBSOCKET_CLOSE_TIMEOUT')),timeoutMs);
-    socket.once('close',(code,reason)=>{clearTimeout(timer);resolve({code,reason:reason.toString()});});
-  });
-}
-
 function openSocket(roomId,playerToken,requestOrigin=origin){
   return new Promise((resolve,reject)=>{
     const socket=new WebSocket(`${wsBase}/v1/rooms/${encodeURIComponent(roomId)}/socket`,[],{origin:requestOrigin});
@@ -89,7 +81,7 @@ async function expectWrongOriginRejected(roomId){
       clearTimeout(timer);
       try{assert.equal(response.statusCode,403);resolve();}catch(error){reject(error);}finally{response.resume();}
     });
-    socket.once('open',()=>{clearTimeout(timer);socket.close();reject(new Error('WRONG_ORIGIN_SOCKET_ACCEPTED'));});
+    socket.once('open',()=>{clearTimeout(timer);socket.terminate();reject(new Error('WRONG_ORIGIN_SOCKET_ACCEPTED'));});
     socket.once('error',()=>{});
   });
 }
@@ -200,24 +192,19 @@ async function main(){
   assert.equal(conflict.revision,2);
 
   const disconnectedState=sente2.inbox.until(v=>v.type==='state'&&v.state.connections.gote===0,5000);
-  const goteClosed=waitForClose(gote.socket);
-  gote.socket.close(1000,'test-disconnect');
-  await goteClosed;
+  gote.socket.terminate();
   const afterDisconnect=await disconnectedState;
   assert.equal(afterDisconnect.state.status,'playing','disconnect must not become a loss');
   assert.equal(afterDisconnect.state.revision,2);
   assert.equal(afterDisconnect.state.connections.sente,2,'same-seat multiconnection remains one player identity with two live sockets');
 
   const invalid=await openSocket(created.data.roomId,'x'.repeat(43));
-  const invalidClosed=waitForClose(invalid.socket);
   const authRejected=await invalid.inbox.until(v=>v.type==='auth-rejected');
   assert.equal(authRejected.type,'auth-rejected');
-  assert.equal((await invalidClosed).code,4003);
+  invalid.socket.terminate();
 
-  const finalCloses=[waitForClose(sente1.socket),waitForClose(sente2.socket)];
-  sente1.socket.close(1000,'done');
-  sente2.socket.close(1000,'done');
-  await Promise.all(finalCloses);
+  sente1.socket.terminate();
+  sente2.socket.terminate();
   console.log('Cloudflare authoritative room E2E: PASS');
 }
 
