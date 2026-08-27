@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "shogi-system",
-  "main": "src/index.ts",
+  "main": "src/index-v2.ts",
   "compatibility_date": "2026-08-27",
   "workers_dev": true,
   "durable_objects": {
