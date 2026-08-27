@@ -1,4 +1,4 @@
-import type { BoardKind, Move, PieceKind, Position, Side } from './types';
+import type { BoardKind, Move, PieceKind, Position, RepetitionStatus, Side } from './types';
 
 export type WasmMaterialEvaluator=(position:Position,perspective:Side)=>number;
 
@@ -12,6 +12,7 @@ export interface WasmShogiEngine {
   legalMoves:(position:Position)=>Move[];
   isCheck:(position:Position,side:Side)=>boolean;
   isMate:(position:Position)=>boolean;
+  repetitionStatus:(position:Position)=>RepetitionStatus;
   searchBestMove:(position:Position,maxDepth:number,nodeLimit:number)=>WasmSearchResult;
 }
 
@@ -20,12 +21,15 @@ interface ShogiWasmExports extends WebAssembly.Exports {
   shogi_engine_version:()=>number;
   shogi_input_buffer:()=>number;
   shogi_input_capacity:()=>number;
+  shogi_history_buffer:()=>number;
+  shogi_history_capacity:()=>number;
   shogi_evaluate_position:(count:number,perspective:number)=>number;
   shogi_legal_move_count:(count:number)=>number;
   shogi_legal_move_at:(index:number)=>number;
   shogi_is_check:(count:number,side:number)=>number;
   shogi_is_mate:(count:number)=>number;
-  shogi_search_best_move:(count:number,maxDepth:number,nodeLimit:number)=>number;
+  shogi_repetition_status_with_history:(positionCount:number,historyWordCount:number)=>number;
+  shogi_search_best_move_with_history:(positionCount:number,historyWordCount:number,maxDepth:number,nodeLimit:number)=>number;
   shogi_nodes_searched:()=>number;
 }
 
@@ -33,6 +37,12 @@ type WasmInstantiateResult=WebAssembly.Instance|{instance:WebAssembly.Instance};
 
 const POSITION_MAGIC=0x53484749;
 const POSITION_WORDS=97;
+const HISTORY_MAGIC=0x48535431;
+const HISTORY_ENTRY_WORDS=5;
+const FNV_PRIME=1099511628211n;
+const FNV_PRIMARY_SEED=1469598103934665603n;
+const FNV_SECONDARY_SEED=0x84222325cbf29ce4n;
+const MASK_64=(1n<<64n)-1n;
 
 const pieceCodes:Record<BoardKind,number>={
   pawn:1,
@@ -58,19 +68,64 @@ const handKinds:Exclude<PieceKind,'king'>[]=['pawn','lance','knight','silver','g
 const sideCode=(side:Side)=>side==='sente'?1:-1;
 
 function encodePosition(position:Position):Int32Array{
+  if(position.turn!=='sente'&&position.turn!=='gote')throw new Error('INVALID_POSITION_TURN');
+  if(!Array.isArray(position.board)||position.board.length!==9||!position.board.every(row=>Array.isArray(row)&&row.length===9))throw new Error('INVALID_POSITION_BOARD');
   const words=new Int32Array(POSITION_WORDS);
   words[0]=POSITION_MAGIC;
   words[1]=sideCode(position.turn);
   let index=2;
   for(const row of position.board){
     for(const piece of row){
-      words[index++]=piece?(piece.side==='sente'?1:-1)*pieceCodes[piece.kind]:0;
+      if(piece===null){words[index++]=0;continue;}
+      if(!piece||typeof piece!=='object'||(piece.side!=='sente'&&piece.side!=='gote')||!(piece.kind in pieceCodes))throw new Error('INVALID_POSITION_PIECE');
+      words[index++]=(piece.side==='sente'?1:-1)*pieceCodes[piece.kind];
     }
   }
   for(const side of ['sente','gote'] as const){
-    for(const kind of handKinds)words[index++]=position.hands[side][kind];
+    const sideHands=position.hands?.[side];
+    if(!sideHands||typeof sideHands!=='object')throw new Error('INVALID_POSITION_HANDS');
+    for(const kind of handKinds){
+      const count=sideHands[kind];
+      if(!Number.isSafeInteger(count)||count<0||count>40)throw new Error('INVALID_POSITION_HAND_COUNT');
+      words[index++]=count;
+    }
   }
   return words;
+}
+
+function positionFromKey(key:string):Position{
+  if(typeof key!=='string'||key.length===0||key.length>65_536)throw new Error('INVALID_HISTORY_KEY');
+  let parsed:unknown;
+  try{parsed=JSON.parse(key);}catch{throw new Error('INVALID_HISTORY_KEY');}
+  if(!Array.isArray(parsed)||parsed.length!==3)throw new Error('INVALID_HISTORY_KEY');
+  const [turn,board,hands]=parsed;
+  return{turn:turn as Side,board:board as Position['board'],hands:hands as Position['hands'],ply:0,history:[]};
+}
+
+function mixHash(hash:bigint,value:number):bigint{
+  return ((hash^BigInt(value&0xff))*FNV_PRIME)&MASK_64;
+}
+
+function hashEncodedPosition(words:Int32Array,seed:bigint):bigint{
+  let hash=seed;
+  for(let i=2;i<83;i++)hash=mixHash(hash,words[i]!+16);
+  for(let i=83;i<97;i++)hash=mixHash(hash,words[i]!);
+  hash=mixHash(hash,words[1]===1?1:2);
+  return hash;
+}
+
+function hashPositionKey(key:string):[bigint,bigint]{
+  const words=encodePosition(positionFromKey(key));
+  return[
+    hashEncodedPosition(words,FNV_PRIMARY_SEED),
+    hashEncodedPosition(words,FNV_SECONDARY_SEED),
+  ];
+}
+
+function splitU64(value:bigint):[number,number]{
+  const low=Number(value&0xffffffffn)|0;
+  const high=Number((value>>32n)&0xffffffffn)|0;
+  return[low,high];
 }
 
 function decodeMove(code:number):Move|null{
@@ -100,12 +155,15 @@ function validExports(exports:WebAssembly.Exports):exports is ShogiWasmExports{
     &&typeof candidate.shogi_engine_version==='function'
     &&typeof candidate.shogi_input_buffer==='function'
     &&typeof candidate.shogi_input_capacity==='function'
+    &&typeof candidate.shogi_history_buffer==='function'
+    &&typeof candidate.shogi_history_capacity==='function'
     &&typeof candidate.shogi_evaluate_position==='function'
     &&typeof candidate.shogi_legal_move_count==='function'
     &&typeof candidate.shogi_legal_move_at==='function'
     &&typeof candidate.shogi_is_check==='function'
     &&typeof candidate.shogi_is_mate==='function'
-    &&typeof candidate.shogi_search_best_move==='function'
+    &&typeof candidate.shogi_repetition_status_with_history==='function'
+    &&typeof candidate.shogi_search_best_move_with_history==='function'
     &&typeof candidate.shogi_nodes_searched==='function';
 }
 
@@ -137,8 +195,12 @@ export async function loadWasmShogiEngine(url:string):Promise<WasmShogiEngine|nu
     if(wasm.shogi_engine_version()<3)return null;
     const capacity=wasm.shogi_input_capacity();
     const pointer=wasm.shogi_input_buffer();
+    const historyCapacity=wasm.shogi_history_capacity();
+    const historyPointer=wasm.shogi_history_buffer();
     if(!Number.isSafeInteger(capacity)||capacity<POSITION_WORDS||capacity>4096)return null;
     if(!Number.isSafeInteger(pointer)||pointer<0)return null;
+    if(!Number.isSafeInteger(historyCapacity)||historyCapacity<2+HISTORY_ENTRY_WORDS||historyCapacity>16_384)return null;
+    if(!Number.isSafeInteger(historyPointer)||historyPointer<0)return null;
 
     const writePosition=(position:Position):number=>{
       const encoded=encodePosition(position);
@@ -148,6 +210,33 @@ export async function loadWasmShogiEngine(url:string):Promise<WasmShogiEngine|nu
       input.fill(0,0,POSITION_WORDS);
       input.set(encoded,0);
       return encoded.length;
+    };
+
+    const writeHistory=(position:Position):number=>{
+      if(!Array.isArray(position.history)||position.history.length===0)throw new Error('WASM_HISTORY_MISSING');
+      const requiredWords=2+position.history.length*HISTORY_ENTRY_WORDS;
+      if(requiredWords>historyCapacity)throw new Error('WASM_HISTORY_CAPACITY');
+      const requiredBytes=historyPointer+historyCapacity*Int32Array.BYTES_PER_ELEMENT;
+      if(requiredBytes>wasm.memory.buffer.byteLength)throw new Error('WASM_HISTORY_MEMORY_RANGE');
+      const history=new Int32Array(wasm.memory.buffer,historyPointer,historyCapacity);
+      history.fill(0,0,requiredWords);
+      history[0]=HISTORY_MAGIC;
+      history[1]=position.history.length;
+      let offset=2;
+      for(const entry of position.history){
+        if(!entry||typeof entry.key!=='string'||(entry.mover!==null&&entry.mover!=='sente'&&entry.mover!=='gote')||typeof entry.gaveCheck!=='boolean')throw new Error('WASM_HISTORY_INVALID_ENTRY');
+        if(entry.mover===null&&entry.gaveCheck)throw new Error('WASM_HISTORY_INVALID_ENTRY');
+        const [primary,secondary]=hashPositionKey(entry.key);
+        const [primaryLow,primaryHigh]=splitU64(primary);
+        const [secondaryLow,secondaryHigh]=splitU64(secondary);
+        const moverCode=entry.mover==='sente'?1:entry.mover==='gote'?2:0;
+        history[offset++]=primaryLow;
+        history[offset++]=primaryHigh;
+        history[offset++]=secondaryLow;
+        history[offset++]=secondaryHigh;
+        history[offset++]=moverCode|(entry.gaveCheck?4:0);
+      }
+      return requiredWords;
     };
 
     return{
@@ -179,11 +268,22 @@ export async function loadWasmShogiEngine(url:string):Promise<WasmShogiEngine|nu
         if(value!==0&&value!==1)throw new Error('WASM_MATE_FAILURE');
         return value===1;
       },
+      repetitionStatus(position){
+        const positionCount=writePosition(position);
+        const historyWords=writeHistory(position);
+        const value=wasm.shogi_repetition_status_with_history(positionCount,historyWords);
+        if(value===0)return{kind:'none'};
+        if(value===1)return{kind:'normal'};
+        if(value===2)return{kind:'perpetual-check',loser:'sente'};
+        if(value===3)return{kind:'perpetual-check',loser:'gote'};
+        throw new Error('WASM_REPETITION_FAILURE');
+      },
       searchBestMove(position,maxDepth,nodeLimit){
         const depth=Math.max(1,Math.min(12,Math.trunc(maxDepth)));
         const nodes=Math.max(100,Math.min(5_000_000,Math.trunc(nodeLimit)));
-        const count=writePosition(position);
-        const move=decodeMove(wasm.shogi_search_best_move(count,depth,nodes));
+        const positionCount=writePosition(position);
+        const historyWords=writeHistory(position);
+        const move=decodeMove(wasm.shogi_search_best_move_with_history(positionCount,historyWords,depth,nodes));
         const nodesVisited=wasm.shogi_nodes_searched();
         return{move,nodesVisited:Number.isSafeInteger(nodesVisited)&&nodesVisited>=0?nodesVisited:0};
       },
