@@ -1,0 +1,25 @@
+name: wasm-verify
+on:
+  push:
+    paths:
+      - 'cpp/**'
+      - 'scripts/build-wasm.sh'
+      - '.github/workflows/wasm-verify.yml'
+  pull_request:
+    paths:
+      - 'cpp/**'
+      - 'scripts/build-wasm.sh'
+      - '.github/workflows/wasm-verify.yml'
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build WebAssembly engine
+        run: sh scripts/build-wasm.sh
+      - name: Verify output
+        run: test -s public/wasm/shogi_engine.wasm
