@@ -25,8 +25,9 @@ const other=(side:Side):Side=>side==='sente'?'gote':'sente';
 const TIMEOUT=Symbol('CPU_SEARCH_TIMEOUT');
 
 interface SearchState { deadline:number; nodes:number }
+export type CpuMaterialEvaluator=(position:Position,perspective:Side)=>number;
 
-function staticEvaluation(pos:Position,perspective:Side):number{
+function tsMaterialEvaluation(pos:Position,perspective:Side):number{
   let score=0;
   for(const row of pos.board)for(const piece of row){
     if(!piece)continue;
@@ -36,6 +37,14 @@ function staticEvaluation(pos:Position,perspective:Side):number{
     const sign=side===perspective?1:-1;
     for(const [kind,count] of Object.entries(pos.hands[side]))score+=sign*(handValues[kind]??0)*count;
   }
+  return score;
+}
+
+function staticEvaluation(pos:Position,perspective:Side,materialEvaluator?:CpuMaterialEvaluator):number{
+  let score:number;
+  if(materialEvaluator){
+    try{score=materialEvaluator(pos,perspective);}catch{score=tsMaterialEvaluation(pos,perspective);}
+  }else score=tsMaterialEvaluation(pos,perspective);
   if(isCheck(pos,other(perspective)))score+=35;
   if(isCheck(pos,perspective))score-=35;
   return score;
@@ -68,13 +77,14 @@ function alphaBeta(
   plyFromRoot:number,
   table:Map<string,number>,
   state:SearchState,
+  materialEvaluator?:CpuMaterialEvaluator,
 ):number{
   if(Date.now()>=state.deadline)throw TIMEOUT;
   state.nodes++;
 
   const repeated=repetitionScore(pos,perspective,plyFromRoot);
   if(repeated!==null)return repeated;
-  if(depth===0)return staticEvaluation(pos,perspective);
+  if(depth===0)return staticEvaluation(pos,perspective,materialEvaluator);
 
   const key=`${positionKey(pos)}|${depth}|${perspective}`;
   const cached=table.get(key);
@@ -89,7 +99,7 @@ function alphaBeta(
   const maximizing=pos.turn===perspective;
   let best=maximizing?-Infinity:Infinity;
   for(const move of moves){
-    const score=alphaBeta(applyLegalMoveUnchecked(pos,move),depth-1,alpha,beta,perspective,plyFromRoot+1,table,state);
+    const score=alphaBeta(applyLegalMoveUnchecked(pos,move),depth-1,alpha,beta,perspective,plyFromRoot+1,table,state,materialEvaluator);
     if(maximizing){
       best=Math.max(best,score);
       alpha=Math.max(alpha,best);
@@ -109,7 +119,7 @@ export interface CpuSearchResult {
   nodesVisited: number;
 }
 
-export function chooseCpuMove(pos:Position,level:CpuLevel):CpuSearchResult{
+export function chooseCpuMove(pos:Position,level:CpuLevel,materialEvaluator?:CpuMaterialEvaluator):CpuSearchResult{
   const legal=legalMoves(pos);
   if(legal.length===0)return{move:null,completedDepth:0,nodesVisited:0};
 
@@ -128,7 +138,7 @@ export function chooseCpuMove(pos:Position,level:CpuLevel):CpuSearchResult{
       let alpha=-Infinity;
       for(const move of ordered){
         if(Date.now()>=state.deadline)throw TIMEOUT;
-        const score=alphaBeta(applyLegalMoveUnchecked(pos,move),depth-1,alpha,Infinity,perspective,1,table,state);
+        const score=alphaBeta(applyLegalMoveUnchecked(pos,move),depth-1,alpha,Infinity,perspective,1,table,state,materialEvaluator);
         current.push({move,score});
         alpha=Math.max(alpha,score);
       }
