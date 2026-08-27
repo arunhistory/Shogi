@@ -10,6 +10,8 @@ interface ShogiWasmExports extends WebAssembly.Exports {
   shogi_evaluate_material_codes:(count:number)=>number;
 }
 
+type WasmInstantiateResult=WebAssembly.Instance|{instance:WebAssembly.Instance};
+
 const pieceCodes:Record<BoardKind,number>={
   pawn:1,
   lance:2,
@@ -57,20 +59,24 @@ function validExports(exports:WebAssembly.Exports):exports is ShogiWasmExports{
     &&typeof candidate.shogi_evaluate_material_codes==='function';
 }
 
+function unwrapInstance(result:WasmInstantiateResult):WebAssembly.Instance{
+  return 'instance' in result?result.instance:result;
+}
+
 async function instantiate(url:string):Promise<WebAssembly.Instance>{
   const response=await fetch(url,{cache:'no-store',credentials:'omit'});
   if(!response.ok)throw new Error(`WASM_HTTP_${response.status}`);
   if(typeof WebAssembly.instantiateStreaming==='function'){
     try{
-      const result=await WebAssembly.instantiateStreaming(response.clone(),{});
-      return result.instance;
+      const result=await WebAssembly.instantiateStreaming(response.clone(),{}) as WasmInstantiateResult;
+      return unwrapInstance(result);
     }catch{
       // Some static hosts may not send application/wasm. Fall back to ArrayBuffer.
     }
   }
   const bytes=await response.arrayBuffer();
-  const result=await WebAssembly.instantiate(bytes,{});
-  return result.instance;
+  const result=await WebAssembly.instantiate(bytes,{}) as WasmInstantiateResult;
+  return unwrapInstance(result);
 }
 
 export async function loadWasmMaterialEvaluator(url:string):Promise<WasmMaterialEvaluator|null>{
