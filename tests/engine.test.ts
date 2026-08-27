@@ -10,7 +10,7 @@ import {
   repetitionCount,
   repetitionStatus,
 } from '../src/game/engine';
-import type { Board, Position } from '../src/game/types';
+import type { Board, Handicap, PieceKind, Position } from '../src/game/types';
 
 function blankPosition(turn:'sente'|'gote'='sente'):Position{
   const board:Board=Array.from({length:9},()=>Array(9).fill(null));
@@ -23,6 +23,10 @@ function blankPosition(turn:'sente'|'gote'='sente'):Position{
 
 function resetHistory(pos:Position):void{
   pos.history=[{key:positionKey(pos),mover:null,gaveCheck:false}];
+}
+
+function countGote(pos:Position,kind:PieceKind):number{
+  return pos.board.flat().filter(piece=>piece?.side==='gote'&&piece.kind===kind).length;
 }
 
 describe('shogi engine',()=>{
@@ -40,10 +44,23 @@ describe('shogi engine',()=>{
     expect(JSON.stringify(p)).toBe(before);
   });
 
-  it('handicap removes upper-side pieces and makes gote move first',()=>{
-    const p=initialPosition('rook');
-    expect(p.turn).toBe('gote');
-    expect(p.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='rook')).toBe(false);
+  it('applies every required handicap to the upper side and makes gote move first',()=>{
+    const expectations:Record<Exclude<Handicap,'even'>,{rook:number;bishop:number;lance:number;knight:number}>={
+      rook:{rook:0,bishop:1,lance:2,knight:2},
+      bishop:{rook:1,bishop:0,lance:2,knight:2},
+      two:{rook:0,bishop:0,lance:2,knight:2},
+      four:{rook:0,bishop:0,lance:0,knight:2},
+      six:{rook:0,bishop:0,lance:0,knight:0},
+    };
+    for(const [handicap,expected] of Object.entries(expectations) as [Exclude<Handicap,'even'>,typeof expectations[Exclude<Handicap,'even'>]][]){
+      const p=initialPosition(handicap);
+      expect(p.turn,handicap).toBe('gote');
+      expect(countGote(p,'rook'),handicap).toBe(expected.rook);
+      expect(countGote(p,'bishop'),handicap).toBe(expected.bishop);
+      expect(countGote(p,'lance'),handicap).toBe(expected.lance);
+      expect(countGote(p,'knight'),handicap).toBe(expected.knight);
+      expect(repetitionCount(p),handicap).toBe(1);
+    }
   });
 
   it('detects check but never generates a move that captures the king',()=>{
@@ -66,6 +83,37 @@ describe('shogi engine',()=>{
     expect(pawnDrops.some(move=>move.to[0]===0)).toBe(false);
     expect(moves.filter(move=>move.drop==='lance').some(move=>move.to[0]===0)).toBe(false);
     expect(moves.filter(move=>move.drop==='knight').some(move=>move.to[0]<=1)).toBe(false);
+  });
+
+  it('rejects a pawn drop that immediately checkmates the opponent',()=>{
+    const p=blankPosition('sente');
+    p.board[0]![3]={side:'gote',kind:'lance'};
+    p.board[0]![5]={side:'gote',kind:'lance'};
+    p.board[1]![3]={side:'gote',kind:'pawn'};
+    p.board[1]![5]={side:'gote',kind:'pawn'};
+    p.board[2]![4]={side:'sente',kind:'gold'};
+    p.hands.sente.pawn=1;
+    resetHistory(p);
+    expect(isCheck(p,'gote')).toBe(false);
+    expect(legalMoves(p).some(move=>move.drop==='pawn'&&move.to[0]===1&&move.to[1]===4)).toBe(false);
+  });
+
+  it('allows a checking pawn drop when the opponent has a legal escape',()=>{
+    const p=blankPosition('sente');
+    p.board[2]![4]={side:'sente',kind:'gold'};
+    p.hands.sente.pawn=1;
+    resetHistory(p);
+    expect(legalMoves(p).some(move=>move.drop==='pawn'&&move.to[0]===1&&move.to[1]===4)).toBe(true);
+  });
+
+  it('offers both promotion and non-promotion when either is legal',()=>{
+    const p=blankPosition('sente');
+    p.board[3]![0]={side:'sente',kind:'pawn'};
+    resetHistory(p);
+    const variants=legalMoves(p).filter(move=>move.from?.[0]===3&&move.from[1]===0&&move.to[0]===2&&move.to[1]===0);
+    expect(variants).toHaveLength(2);
+    expect(variants.some(move=>move.promote===true)).toBe(true);
+    expect(variants.some(move=>!move.promote)).toBe(true);
   });
 
   it('forces promotion when an unpromoted piece would otherwise have no legal destination',()=>{
