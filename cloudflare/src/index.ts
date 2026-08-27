@@ -41,12 +41,10 @@ const requestIdPattern=/^[A-Za-z0-9_-]{8,128}$/;
 function responseJson(value:unknown,status=200,extra:HeadersInit={}):Response{
   return new Response(JSON.stringify(value),{status,headers:{...jsonHeaders,...extra}});
 }
-
-function errorJson(code:string,status=400):Response{return responseJson({ok:false,code},status);}
+function errorJson(code:string,status=400,extra:HeadersInit={}):Response{return responseJson({ok:false,code},status,extra);}
 function directoryStub(env:Env){return env.DIRECTORY.get(env.DIRECTORY.idFromName('shogi-directory-v1'));}
 function contentStub(env:Env){return env.CONTENT.get(env.CONTENT.idFromName('shogi-content-v1'));}
 function roomStub(env:Env,roomId:string){return env.ROOMS.get(env.ROOMS.idFromName(roomId));}
-function otherSide(side:Side):Side{return side==='sente'?'gote':'sente';}
 
 function randomToken(bytes:number):string{
   const data=new Uint8Array(bytes);
@@ -104,20 +102,20 @@ function parseMove(value:unknown):Move{
   const to=parseSquare(data.to);
   const promote=data.promote===true;
   if(data.drop!==undefined){
+    if(promote)throw new Error('INVALID_MOVE');
     if(typeof data.drop!=='string'||!['rook','bishop','gold','silver','knight','lance','pawn'].includes(data.drop))throw new Error('INVALID_MOVE');
-    return{drop:data.drop as Move['drop'],to,...(promote?{promote:true}:{})};
+    return{drop:data.drop as Move['drop'],to};
   }
   const from=parseSquare(data.from);
   return{from,to,...(promote?{promote:true}:{})};
 }
 
 function parseSquare(value:unknown):[number,number]{
-  if(!Array.isArray(value)||value.length!==2)return invalidSquare();
+  if(!Array.isArray(value)||value.length!==2)throw new Error('INVALID_SQUARE');
   const y=Number(value[0]),x=Number(value[1]);
-  if(!Number.isInteger(y)||!Number.isInteger(x)||y<0||y>8||x<0||x>8)return invalidSquare();
+  if(!Number.isInteger(y)||!Number.isInteger(x)||y<0||y>8||x<0||x>8)throw new Error('INVALID_SQUARE');
   return[y,x];
 }
-function invalidSquare():never{throw new Error('INVALID_SQUARE');}
 
 function corsHeaders(request:Request,env:Env):HeadersInit{
   const origin=request.headers.get('origin');
@@ -133,10 +131,7 @@ function corsHeaders(request:Request,env:Env):HeadersInit{
   return{};
 }
 
-function clientIp(request:Request):string{
-  return request.headers.get('cf-connecting-ip')?.trim()||'unknown';
-}
-
+function clientIp(request:Request):string{return request.headers.get('cf-connecting-ip')?.trim()||'unknown';}
 function asInternalRequest(path:string,body:unknown,request:Request):Request{
   return new Request(`https://internal${path}`,{
     method:'POST',
@@ -166,15 +161,18 @@ async function workerFetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);
   const cors=corsHeaders(request,env);
   if(request.method==='OPTIONS')return new Response(null,{status:204,headers:cors});
-
   if(url.pathname==='/health'&&request.method==='GET')return responseJson({ok:true,service:'shogi-system'},200,cors);
 
   if(url.pathname==='/v1/rooms'&&request.method==='POST'){
     try{
       const body=await readJson(request);
-      const result=await directoryStub(env).fetch(asInternalRequest('/create',{requestId:requestId(body.requestId),handicap:parseHandicap(body.handicap),appUrl:env.APP_URL},request));
+      const result=await directoryStub(env).fetch(asInternalRequest('/create',{
+        requestId:requestId(body.requestId),
+        handicap:parseHandicap(body.handicap),
+        appUrl:env.APP_URL,
+      },request));
       return new Response(result.body,{status:result.status,headers:{...jsonHeaders,...cors}});
-    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400);}
+    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400,cors);}
   }
 
   if(url.pathname==='/v1/rooms/join'&&request.method==='POST'){
@@ -182,9 +180,11 @@ async function workerFetch(request:Request,env:Env):Promise<Response>{
       const body=await readJson(request);
       const passcode=typeof body.passcode==='string'?body.passcode.trim().toUpperCase():'';
       if(passcode.length!==8||![...passcode].every(char=>passcodeAlphabet.includes(char)))throw new Error('INVALID_PASSCODE');
-      const result=await directoryStub(env).fetch(asInternalRequest('/join-passcode',{requestId:requestId(body.requestId),passcode,appUrl:env.APP_URL},request));
+      const result=await directoryStub(env).fetch(asInternalRequest('/join-passcode',{
+        requestId:requestId(body.requestId),passcode,appUrl:env.APP_URL,
+      },request));
       return new Response(result.body,{status:result.status,headers:{...jsonHeaders,...cors}});
-    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400);}
+    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400,cors);}
   }
 
   if(url.pathname==='/v1/rooms/invite'&&request.method==='POST'){
@@ -192,16 +192,18 @@ async function workerFetch(request:Request,env:Env):Promise<Response>{
       const body=await readJson(request);
       const inviteToken=typeof body.inviteToken==='string'?body.inviteToken.trim():'';
       if(!/^[A-Za-z0-9_-]{24,128}$/.test(inviteToken))throw new Error('INVALID_INVITE');
-      const result=await directoryStub(env).fetch(asInternalRequest('/join-invite',{requestId:requestId(body.requestId),inviteToken,appUrl:env.APP_URL},request));
+      const result=await directoryStub(env).fetch(asInternalRequest('/join-invite',{
+        requestId:requestId(body.requestId),inviteToken,appUrl:env.APP_URL,
+      },request));
       return new Response(result.body,{status:result.status,headers:{...jsonHeaders,...cors}});
-    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400);}
+    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400,cors);}
   }
 
   const socketMatch=url.pathname.match(/^\/v1\/rooms\/([A-Za-z0-9_-]{16,128})\/socket$/);
   if(socketMatch&&request.method==='GET'){
-    if(request.headers.get('upgrade')?.toLowerCase()!=='websocket')return errorJson('WEBSOCKET_REQUIRED',426);
+    if(request.headers.get('upgrade')?.toLowerCase()!=='websocket')return errorJson('WEBSOCKET_REQUIRED',426,cors);
     const roomId=socketMatch[1]!;
-    if(!roomIdPattern.test(roomId))return errorJson('INVALID_ROOM_ID',400);
+    if(!roomIdPattern.test(roomId))return errorJson('INVALID_ROOM_ID',400,cors);
     return roomStub(env,roomId).fetch(new Request('https://internal/socket',{headers:request.headers}));
   }
 
@@ -212,42 +214,54 @@ async function workerFetch(request:Request,env:Env):Promise<Response>{
     return new Response(result.body,{status:result.status,headers:{...jsonHeaders,...cors}});
   }
 
-  return errorJson('NOT_FOUND',404);
+  return errorJson('NOT_FOUND',404,cors);
 }
 
 export default {fetch:workerFetch} satisfies ExportedHandler<Env>;
 
 export class ShogiDirectory extends DurableObject<Env>{
+  private gate:Promise<void>=Promise.resolve();
   constructor(ctx:DurableObjectState,env:Env){super(ctx,env);}
 
   async fetch(request:Request):Promise<Response>{
     if(request.method!=='POST')return errorJson('METHOD_NOT_ALLOWED',405);
-    const url=new URL(request.url);
-    try{
-      const body=await readJson(request);
-      const ip=request.headers.get('x-client-ip')??'unknown';
-      if(url.pathname==='/create')return this.create(body,ip);
-      if(url.pathname==='/join-passcode')return this.join(body,ip,'passcode');
-      if(url.pathname==='/join-invite')return this.join(body,ip,'invite');
-      return errorJson('NOT_FOUND',404);
-    }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400);}
+    return this.exclusive(async()=>{
+      const url=new URL(request.url);
+      try{
+        const body=await readJson(request);
+        const ip=request.headers.get('x-client-ip')??'unknown';
+        if(url.pathname==='/create')return this.create(body,ip);
+        if(url.pathname==='/join-passcode')return this.join(body,ip,'passcode');
+        if(url.pathname==='/join-invite')return this.join(body,ip,'invite');
+        return errorJson('NOT_FOUND',404);
+      }catch(error){return errorJson(error instanceof Error?error.message:'INVALID_REQUEST',400);}
+    });
+  }
+
+  private async exclusive<T>(operation:()=>Promise<T>):Promise<T>{
+    const previous=this.gate;
+    let release!:()=>void;
+    this.gate=new Promise<void>(resolve=>{release=resolve;});
+    await previous;
+    try{return await operation();}finally{release();}
   }
 
   private async enforceRateLimit(ip:string,scope:'create'|'join'):Promise<void>{
     const bucket=Math.floor(Date.now()/60_000);
-    const key=`rate:${scope}:${await sha256(ip)}:${bucket}`;
+    const ipHash=await sha256(ip);
+    const key=`rate:${scope}:${ipHash}:${bucket}`;
     const count=(await this.ctx.storage.get<number>(key))??0;
     const limit=scope==='create'?12:40;
     if(count>=limit)throw new Error('RATE_LIMITED');
     await this.ctx.storage.put(key,count+1);
-    const oldKey=`rate:${scope}:${await sha256(ip)}:${bucket-2}`;
-    await this.ctx.storage.delete(oldKey);
+    await this.ctx.storage.delete(`rate:${scope}:${ipHash}:${bucket-2}`);
   }
 
   private async create(body:Record<string,unknown>,ip:string):Promise<Response>{
     await this.enforceRateLimit(ip,'create');
     const id=requestId(body.requestId);
-    const existing=await this.ctx.storage.get<Record<string,unknown>>(`create:${id}`);
+    const opKey=`create:${id}`;
+    const existing=await this.ctx.storage.get<Record<string,unknown>>(opKey);
     if(existing)return responseJson(existing);
     const handicap=parseHandicap(body.handicap);
     const appUrl=typeof body.appUrl==='string'?body.appUrl:'';
@@ -269,7 +283,6 @@ export class ShogiDirectory extends DurableObject<Env>{
     }));
     if(!init.ok)throw new Error('ROOM_INIT_FAILED');
 
-    await this.ctx.storage.put({[`pass:${passcode}`]:roomId,[`invite:${inviteToken}`]:roomId});
     const result={
       roomId,
       inviteUrl:`${appUrl}${appUrl.includes('?')?'&':'?'}invite=${encodeURIComponent(inviteToken)}`,
@@ -278,7 +291,13 @@ export class ShogiDirectory extends DurableObject<Env>{
       seat:'sente' as const,
       revision:0,
     };
-    await this.ctx.storage.put(`create:${id}`,result);
+    await this.ctx.storage.put({
+      [`pass:${passcode}`]:roomId,
+      [`invite:${inviteToken}`]:roomId,
+      [`room-pass:${roomId}`]:passcode,
+      [`room-invite:${roomId}`]:inviteToken,
+      [opKey]:result,
+    });
     return responseJson(result);
   }
 
@@ -288,11 +307,10 @@ export class ShogiDirectory extends DurableObject<Env>{
     const opKey=`join:${kind}:${id}`;
     const existing=await this.ctx.storage.get<Record<string,unknown>>(opKey);
     if(existing)return responseJson(existing);
-    const lookup=kind==='passcode'
-      ?`pass:${String(body.passcode??'')}`
-      :`invite:${String(body.inviteToken??'')}`;
+    const lookup=kind==='passcode'?`pass:${String(body.passcode??'')}`:`invite:${String(body.inviteToken??'')}`;
     const roomId=await this.ctx.storage.get<string>(lookup);
     if(!roomId)return errorJson(kind==='passcode'?'PASSCODE_NOT_FOUND':'INVITE_NOT_FOUND',404);
+
     const playerToken=randomToken(32);
     const playerTokenHash=await sha256(playerToken);
     const joined=await this.env.ROOMS.get(this.env.ROOMS.idFromName(roomId)).fetch(new Request('https://internal/join',{
@@ -301,8 +319,9 @@ export class ShogiDirectory extends DurableObject<Env>{
     if(!joined.ok)return new Response(joined.body,{status:joined.status,headers:jsonHeaders});
     const room=await joined.json() as {revision:number};
     const appUrl=typeof body.appUrl==='string'?body.appUrl:'';
-    const passcode=kind==='passcode'?String(body.passcode):await this.findPasscode(roomId);
-    const inviteToken=kind==='invite'?String(body.inviteToken):await this.findInvite(roomId);
+    const passcode=kind==='passcode'?String(body.passcode):await this.ctx.storage.get<string>(`room-pass:${roomId}`);
+    const inviteToken=kind==='invite'?String(body.inviteToken):await this.ctx.storage.get<string>(`room-invite:${roomId}`);
+    if(!passcode||!inviteToken)throw new Error('ROOM_MAPPING_MISSING');
     const result={
       roomId,
       inviteUrl:`${appUrl}${appUrl.includes('?')?'&':'?'}invite=${encodeURIComponent(inviteToken)}`,
@@ -314,54 +333,14 @@ export class ShogiDirectory extends DurableObject<Env>{
     await this.ctx.storage.put(opKey,result);
     return responseJson(result);
   }
-
-  private async findPasscode(roomId:string):Promise<string>{
-    const entries=await this.ctx.storage.list<string>({prefix:'pass:'});
-    for(const [key,value] of entries)if(value===roomId)return key.slice(5);
-    throw new Error('PASSCODE_MAPPING_MISSING');
-  }
-  private async findInvite(roomId:string):Promise<string>{
-    const entries=await this.ctx.storage.list<string>({prefix:'invite:'});
-    for(const [key,value] of entries)if(value===roomId)return key.slice(7);
-    throw new Error('INVITE_MAPPING_MISSING');
-  }
 }
 
 export class ShogiRoom extends DurableObject<Env>{
-  private queue:Promise<void>=Promise.resolve();
-
+  private gate:Promise<void>=Promise.resolve();
   constructor(ctx:DurableObjectState,env:Env){super(ctx,env);}
 
   async fetch(request:Request):Promise<Response>{
     const url=new URL(request.url);
-    if(url.pathname==='/init'&&request.method==='POST'){
-      const body=await readJson(request);
-      const existing=await this.ctx.storage.get<StoredRoomState>('state');
-      if(existing)return errorJson('ROOM_ALREADY_INITIALIZED',409);
-      const roomId=typeof body.roomId==='string'&&roomIdPattern.test(body.roomId)?body.roomId:'';
-      const creatorTokenHash=typeof body.creatorTokenHash==='string'&&/^[a-f0-9]{64}$/.test(body.creatorTokenHash)?body.creatorTokenHash:'';
-      if(!roomId||!creatorTokenHash)return errorJson('INVALID_ROOM_INIT',400);
-      const handicap=parseHandicap(body.handicap);
-      const state:StoredRoomState={
-        roomId,handicap,revision:0,status:'waiting',position:initialPosition(handicap),
-        players:{sente:creatorTokenHash,gote:null},processed:{sente:[],gote:[]},
-      };
-      await this.ctx.storage.put('state',state);
-      return responseJson({ok:true,revision:state.revision});
-    }
-
-    if(url.pathname==='/join'&&request.method==='POST'){
-      const body=await readJson(request);
-      const tokenHash=typeof body.playerTokenHash==='string'?body.playerTokenHash:'';
-      if(!/^[a-f0-9]{64}$/.test(tokenHash))return errorJson('INVALID_PLAYER_TOKEN',400);
-      const state=await this.ctx.storage.get<StoredRoomState>('state');
-      if(!state)return errorJson('ROOM_NOT_FOUND',404);
-      if(state.players.gote)return errorJson('ROOM_FULL',409);
-      const next:{[K in keyof StoredRoomState]:StoredRoomState[K]}={...state,players:{...state.players,gote:tokenHash},status:'playing',revision:state.revision+1};
-      await this.ctx.storage.put('state',next);
-      return responseJson({ok:true,revision:next.revision});
-    }
-
     if(url.pathname==='/socket'&&request.headers.get('upgrade')?.toLowerCase()==='websocket'){
       const state=await this.ctx.storage.get<StoredRoomState>('state');
       if(!state)return errorJson('ROOM_NOT_FOUND',404);
@@ -369,27 +348,70 @@ export class ShogiRoom extends DurableObject<Env>{
       const client=pair[0];
       const server=pair[1];
       this.ctx.acceptWebSocket(server);
-      const attachment:SocketAttachment={connectionId:randomToken(12),authenticated:false};
-      server.serializeAttachment(attachment);
+      server.serializeAttachment({connectionId:randomToken(12),authenticated:false} satisfies SocketAttachment);
       return new Response(null,{status:101,webSocket:client});
     }
 
-    return errorJson('NOT_FOUND',404);
+    return this.exclusive(async()=>{
+      if(url.pathname==='/init'&&request.method==='POST'){
+        const body=await readJson(request);
+        const existing=await this.ctx.storage.get<StoredRoomState>('state');
+        if(existing)return errorJson('ROOM_ALREADY_INITIALIZED',409);
+        const roomId=typeof body.roomId==='string'&&roomIdPattern.test(body.roomId)?body.roomId:'';
+        const creatorTokenHash=typeof body.creatorTokenHash==='string'&&/^[a-f0-9]{64}$/.test(body.creatorTokenHash)?body.creatorTokenHash:'';
+        if(!roomId||!creatorTokenHash)return errorJson('INVALID_ROOM_INIT',400);
+        const handicap=parseHandicap(body.handicap);
+        const state:StoredRoomState={
+          roomId,handicap,revision:0,status:'waiting',position:initialPosition(handicap),
+          players:{sente:creatorTokenHash,gote:null},processed:{sente:[],gote:[]},
+        };
+        await this.ctx.storage.put('state',state);
+        return responseJson({ok:true,revision:state.revision});
+      }
+
+      if(url.pathname==='/join'&&request.method==='POST'){
+        const body=await readJson(request);
+        const tokenHash=typeof body.playerTokenHash==='string'?body.playerTokenHash:'';
+        if(!/^[a-f0-9]{64}$/.test(tokenHash))return errorJson('INVALID_PLAYER_TOKEN',400);
+        const state=await this.ctx.storage.get<StoredRoomState>('state');
+        if(!state)return errorJson('ROOM_NOT_FOUND',404);
+        if(state.players.gote)return errorJson('ROOM_FULL',409);
+        const next:StoredRoomState={
+          ...state,
+          players:{...state.players,gote:tokenHash},
+          status:'playing',
+          revision:state.revision+1,
+        };
+        await this.ctx.storage.put('state',next);
+        this.broadcastState(next);
+        return responseJson({ok:true,revision:next.revision});
+      }
+      return errorJson('NOT_FOUND',404);
+    });
   }
 
   async webSocketMessage(socket:WebSocket,message:string|ArrayBuffer):Promise<void>{
-    this.queue=this.queue.then(()=>this.handleSocketMessage(socket,message)).catch(()=>{
-      try{socket.send(JSON.stringify({type:'error',code:'SERVER_ERROR'}));}catch{/* closed */}
-    });
-    await this.queue;
+    await this.exclusive(()=>this.handleSocketMessage(socket,message));
   }
 
-  webSocketClose(_socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):void{
-    // Disconnect never becomes resignation/mate/loss. The detailed disconnect outcome is intentionally unset.
+  async webSocketClose(_socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):Promise<void>{
+    const state=await this.ctx.storage.get<StoredRoomState>('state');
+    if(state)this.broadcastState(state);
+    // Disconnect never becomes resignation/mate/loss. Detailed disconnect outcome stays unset.
   }
 
-  webSocketError(_socket:WebSocket,_error:unknown):void{
-    // Network failure does not mutate the authoritative game result.
+  async webSocketError(_socket:WebSocket,_error:unknown):Promise<void>{
+    const state=await this.ctx.storage.get<StoredRoomState>('state');
+    if(state)this.broadcastState(state);
+    // Network failure never mutates the authoritative result.
+  }
+
+  private async exclusive<T>(operation:()=>Promise<T>):Promise<T>{
+    const previous=this.gate;
+    let release!:()=>void;
+    this.gate=new Promise<void>(resolve=>{release=resolve;});
+    await previous;
+    try{return await operation();}finally{release();}
   }
 
   private async handleSocketMessage(socket:WebSocket,message:string|ArrayBuffer):Promise<void>{
@@ -413,12 +435,11 @@ export class ShogiRoom extends DurableObject<Env>{
       for(const existing of this.ctx.getWebSockets()){
         if(existing===socket)continue;
         const other=existing.deserializeAttachment() as SocketAttachment|undefined;
-        if(other?.authenticated&&other.seat===seat){try{existing.close(4001,'reconnected');}catch{/* closed */}}
+        if(other?.authenticated&&other.seat===seat){try{existing.close(4001,'reconnected');}catch{/* already closed */}}
       }
-      const authenticated:SocketAttachment={...attachment,authenticated:true,seat};
-      socket.serializeAttachment(authenticated);
+      socket.serializeAttachment({...attachment,authenticated:true,seat} satisfies SocketAttachment);
       this.send(socket,{type:'authenticated',seat});
-      this.sendState(socket,state);
+      this.broadcastState(state);
       return;
     }
 
@@ -441,16 +462,17 @@ export class ShogiRoom extends DurableObject<Env>{
     try{position=applyMove(state.position,move);}catch{this.reject(socket,id,'ILLEGAL_MOVE',state.revision);return;}
     const outcome=gameOutcome(position);
     const processed=[...state.processed[seat],id].slice(-128);
+    const terminal=outcome.ended?{
+      status:'ended' as const,
+      ...('winner' in outcome?{winner:outcome.winner}:{}),
+      resultReason:outcome.reason,
+    }:{status:'playing' as const};
     const next:StoredRoomState={
       ...state,
       position,
       revision:state.revision+1,
       processed:{...state.processed,[seat]:processed},
-      ...(outcome.ended?{
-        status:'ended' as const,
-        ...(outcome.winner?{winner:outcome.winner}:{}),
-        resultReason:outcome.reason,
-      }:{status:'playing' as const}),
+      ...terminal,
     };
     await this.ctx.storage.put('state',next);
     this.broadcastState(next);
@@ -466,7 +488,7 @@ export class ShogiRoom extends DurableObject<Env>{
       if(attachment?.authenticated)this.sendState(socket,state);
     }
   }
-  private send(socket:WebSocket,value:unknown){try{socket.send(JSON.stringify(value));}catch{/* closed */}}
+  private send(socket:WebSocket,value:unknown){try{socket.send(JSON.stringify(value));}catch{/* already closed */}}
 }
 
 export class ShogiContent extends DurableObject<Env>{
