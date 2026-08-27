@@ -3,11 +3,15 @@ on:
   push:
     paths:
       - 'cloudflare/**'
+      - 'cpp/**'
+      - 'scripts/build-wasm.sh'
       - 'src/game/**'
       - '.github/workflows/cloudflare-verify.yml'
   pull_request:
     paths:
       - 'cloudflare/**'
+      - 'cpp/**'
+      - 'scripts/build-wasm.sh'
       - 'src/game/**'
       - '.github/workflows/cloudflare-verify.yml'
 jobs:
@@ -19,6 +23,12 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build shared C++ WebAssembly engine
+        run: sh scripts/build-wasm.sh
       - name: Install pinned Cloudflare toolchain
         working-directory: cloudflare
         run: npm install
@@ -28,6 +38,10 @@ jobs:
       - name: Bundle Worker without deployment
         working-directory: cloudflare
         run: npm run build
+      - name: Verify compiled Wasm is present in dry-run artifact
+        run: |
+          test -s cloudflare/src/shogi_engine.wasm
+          find cloudflare/dist -type f -maxdepth 2 -print
       - name: Run local Durable Objects E2E
         working-directory: cloudflare
         run: |
