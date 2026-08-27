@@ -52,6 +52,11 @@ function legalCodes(){
   return Array.from({length:count},(_,index)=>wasm.shogi_legal_move_at(index));
 }
 
+function encode({from=-1,to,drop=0,promote=false}){
+  const encodedFrom=from>=0?from:127;
+  return (to&0x7f)|((encodedFrom&0x7f)<<7)|((drop&0x0f)<<14)|((promote?1:0)<<18);
+}
+
 function decode(code){
   return{
     to:code&0x7f,
@@ -73,7 +78,7 @@ noKingCapture[0*9+4]=-8;
 noKingCapture[1*9+4]=7;
 noKingCapture[8*9+4]=8;
 writePosition({board:noKingCapture});
-const kingCaptureCode=(0*9+4)|((1*9+4)<<7);
+const kingCaptureCode=encode({from:1*9+4,to:0*9+4});
 assert.ok(!legalCodes().includes(kingCaptureCode),'king capture was generated');
 
 const nifuBoard=new Int32Array(81);
@@ -86,6 +91,60 @@ writePosition({board:nifuBoard,hands});
 const nifuMoves=legalCodes().map(decode).filter(move=>move.drop===1);
 assert.ok(nifuMoves.every(move=>move.to%9!==3),'nifu pawn drop was generated');
 assert.ok(nifuMoves.every(move=>Math.floor(move.to/9)!==0),'dead-end pawn drop was generated');
+
+const forcedPromotion=new Int32Array(81);
+forcedPromotion[0*9+4]=-8;
+forcedPromotion[8*9+4]=8;
+forcedPromotion[1*9+0]=1;
+writePosition({board:forcedPromotion});
+const forcedFrom=1*9+0,forcedTo=0*9+0;
+const forcedCodes=legalCodes();
+assert.ok(forcedCodes.includes(encode({from:forcedFrom,to:forcedTo,promote:true})),'forced pawn promotion is missing');
+assert.ok(!forcedCodes.includes(encode({from:forcedFrom,to:forcedTo,promote:false})),'illegal non-promotion on final rank was generated');
+
+const optionalPromotion=new Int32Array(81);
+optionalPromotion[0*9+4]=-8;
+optionalPromotion[8*9+4]=8;
+optionalPromotion[3*9+0]=1;
+writePosition({board:optionalPromotion});
+const optionalFrom=3*9+0,optionalTo=2*9+0;
+const optionalCodes=legalCodes();
+assert.ok(optionalCodes.includes(encode({from:optionalFrom,to:optionalTo,promote:false})),'legal non-promotion option is missing');
+assert.ok(optionalCodes.includes(encode({from:optionalFrom,to:optionalTo,promote:true})),'legal promotion option is missing');
+
+const selfCheck=new Int32Array(81);
+selfCheck[0*9+0]=-8;
+selfCheck[0*9+4]=-7;
+selfCheck[7*9+4]=5;
+selfCheck[8*9+4]=8;
+writePosition({board:selfCheck});
+assert.equal(wasm.shogi_is_check(WORDS,1),0,'blocked rook incorrectly gives check');
+assert.ok(!legalCodes().includes(encode({from:7*9+4,to:7*9+3})),'move exposing own king to check was generated');
+
+const escapablePawnCheck=new Int32Array(81);
+escapablePawnCheck[0*9+4]=-8;
+escapablePawnCheck[8*9+4]=8;
+const pawnHand=new Int32Array(14);
+pawnHand[0]=1;
+writePosition({board:escapablePawnCheck,hands:pawnHand});
+const checkingDrop=encode({to:1*9+4,drop:1});
+assert.ok(legalCodes().includes(checkingDrop),'checking pawn drop with legal king escape was rejected');
+
+const pawnDropMate=new Int32Array(81);
+pawnDropMate[0*9+3]=-2;
+pawnDropMate[0*9+4]=-8;
+pawnDropMate[0*9+5]=-2;
+pawnDropMate[2*9+4]=5;
+pawnDropMate[8*9+4]=8;
+writePosition({board:pawnDropMate,hands:pawnHand});
+assert.ok(!legalCodes().includes(checkingDrop),'uchi-fuzume pawn drop was generated');
+
+const matedPosition=pawnDropMate.slice();
+matedPosition[1*9+4]=1;
+writePosition({turn:-1,board:matedPosition});
+assert.equal(wasm.shogi_is_check(WORDS,-1),1,'mated king is not reported in check');
+assert.equal(wasm.shogi_is_mate(WORDS),1,'checkmate position is not reported as mate');
+assert.equal(legalCodes().length,0,'checkmated side still has a legal move');
 
 const invalid=new Int32Array(WORDS);
 input.fill(0,0,WORDS);
