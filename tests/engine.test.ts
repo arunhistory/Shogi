@@ -32,7 +32,7 @@ describe('shogi engine',()=>{
   it('rejects an illegal move without mutating position',()=>{
     const p=initialPosition();
     const before=JSON.stringify(p);
-    expect(()=>applyMove(p,{from:[8,4],to:[7,4]})).toThrow('ILLEGAL_MOVE');
+    expect(()=>applyMove(p,{from:[8,4],to:[6,4]})).toThrow('ILLEGAL_MOVE');
     expect(JSON.stringify(p)).toBe(before);
   });
 
