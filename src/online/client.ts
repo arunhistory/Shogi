@@ -30,6 +30,9 @@ export type OnlineEvent =
 const tokenKey=(roomId:string)=>`shogi:room:${roomId}:player-token`;
 const roomInfoKey=(roomId:string)=>`shogi:room:${roomId}:info`;
 const inviteRoomKey=(inviteToken:string)=>`shogi:invite:${inviteToken}:room`;
+const passcodeRoomKey=(passcode:string)=>`shogi:passcode:${passcode}:room`;
+const pendingOperationKey=(kind:string)=>`shogi:pending-operation:${kind}`;
+const activeRoomKey='shogi:active-room';
 
 function apiBase(value:string):string{
   const url=new URL(value);
@@ -93,12 +96,28 @@ function publicEntry(handshake:RoomHandshakeResponse):OnlineRoomEntry{
   };
 }
 
+function operationRequestId(key:string):string{
+  const storage=pendingOperationKey(key);
+  const existing=sessionStorage.getItem(storage);
+  if(existing&&/^[A-Za-z0-9_-]{8,128}$/.test(existing))return existing;
+  const created=crypto.randomUUID();
+  sessionStorage.setItem(storage,created);
+  return created;
+}
+
+function completeOperation(key:string):void{
+  sessionStorage.removeItem(pendingOperationKey(key));
+}
+
 function rememberPlayer(handshake:RoomHandshakeResponse,inviteToken?:string):void{
   const info=publicEntry(handshake);
+  const normalizedPasscode=handshake.passcode.trim().toUpperCase();
   // Discovery credentials and existing-player credentials remain separate.
   // The private reconnect token is never put in invite/passcode/WebSocket URLs.
   sessionStorage.setItem(tokenKey(handshake.roomId),handshake.playerToken);
   sessionStorage.setItem(roomInfoKey(handshake.roomId),JSON.stringify(info));
+  sessionStorage.setItem(passcodeRoomKey(normalizedPasscode),handshake.roomId);
+  sessionStorage.setItem(activeRoomKey,handshake.roomId);
   if(inviteToken)sessionStorage.setItem(inviteRoomKey(inviteToken),handshake.roomId);
 }
 
@@ -115,19 +134,37 @@ function readRememberedRoom(roomId:string):OnlineRoomEntry|null{
   }catch{return null;}
 }
 
+export function getActiveOnlineRoom():OnlineRoomEntry|null{
+  const roomId=sessionStorage.getItem(activeRoomKey);
+  return roomId?readRememberedRoom(roomId):null;
+}
+
+export function clearActiveOnlineRoom():void{
+  sessionStorage.removeItem(activeRoomKey);
+}
+
 export async function createOnlineRoom(base:string,handicap:Handicap):Promise<OnlineRoomEntry>{
-  const requestId=crypto.randomUUID();
+  const op=`create:${handicap}`;
+  const requestId=operationRequestId(op);
   const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap}));
   rememberPlayer(handshake);
+  completeOperation(op);
   return publicEntry(handshake);
 }
 
 export async function joinOnlineRoom(base:string,passcode:string):Promise<OnlineRoomEntry>{
   const normalized=passcode.trim().toUpperCase();
   if(normalized.length!==8)throw new Error('INVALID_PASSCODE');
-  const requestId=crypto.randomUUID();
+  const rememberedRoomId=sessionStorage.getItem(passcodeRoomKey(normalized));
+  if(rememberedRoomId){
+    const remembered=readRememberedRoom(rememberedRoomId);
+    if(remembered){sessionStorage.setItem(activeRoomKey,remembered.roomId);return remembered;}
+  }
+  const op=`join-passcode:${normalized}`;
+  const requestId=operationRequestId(op);
   const handshake=parseHandshake(await postJson(base,'/v1/rooms/join',{requestId,passcode:normalized}));
   rememberPlayer(handshake);
+  completeOperation(op);
   return publicEntry(handshake);
 }
 
@@ -137,11 +174,13 @@ export async function joinOnlineInvite(base:string,inviteToken:string):Promise<O
   const rememberedRoomId=sessionStorage.getItem(inviteRoomKey(normalized));
   if(rememberedRoomId){
     const remembered=readRememberedRoom(rememberedRoomId);
-    if(remembered)return remembered;
+    if(remembered){sessionStorage.setItem(activeRoomKey,remembered.roomId);return remembered;}
   }
-  const requestId=crypto.randomUUID();
+  const op=`join-invite:${normalized}`;
+  const requestId=operationRequestId(op);
   const handshake=parseHandshake(await postJson(base,'/v1/rooms/invite',{requestId,inviteToken:normalized}));
   rememberPlayer(handshake,normalized);
+  completeOperation(op);
   return publicEntry(handshake);
 }
 
