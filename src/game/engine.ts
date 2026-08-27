@@ -113,7 +113,6 @@ export function isCheck(pos:Position,side:Side):boolean{
     const q=pos.board[y]![x];
     if(q?.side===side&&q.kind==='king')king=[y,x];
   }
-  // 正常な対局状態では玉は必ず存在する。欠損状態を合法扱いしない。
   if(!king)return true;
   for(let y=0;y<9;y++)for(let x=0;x<9;x++){
     const q=pos.board[y]![x];
@@ -173,7 +172,6 @@ function legalMovesInternal(pos:Position,checkPawnDropMate:boolean):Move[]{
     const piece=pos.board[y]![x];
     if(piece?.side!==pos.turn)continue;
     for(const to of pseudoTargets(pos,y,x)){
-      // 将棋は玉を実際に取って終わらない。玉を取る着手は生成しない。
       if(pos.board[to[0]]![to[1]]?.kind==='king')continue;
       const base=unpromoteMap[piece.kind];
       const canPromote=!!promoteMap[base]&&piece.kind===base&&(zone(piece.side,y)||zone(piece.side,to[0]));
@@ -205,6 +203,12 @@ function legalMovesInternal(pos:Position,checkPawnDropMate:boolean):Move[]{
 
 export function legalMoves(pos:Position):Move[]{
   return legalMovesInternal(pos,true);
+}
+
+// CPU探索等で、legalMoves() が生成した着手を再検証せず適用するための内部境界。
+// 外部入力には applyMove() を使用する。
+export function applyLegalMoveUnchecked(pos:Position,m:Move):Position{
+  return rawApply(pos,m);
 }
 
 function moveEquals(a:Move,b:Move):boolean{
