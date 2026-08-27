@@ -12,9 +12,9 @@ import type {
   Side,
 } from './types';
 
-const baseKinds: PieceKind[]=['king','rook','bishop','gold','silver','knight','lance','pawn'];
-const promoteMap: Partial<Record<PieceKind,BoardKind>>={rook:'dragon',bishop:'horse',silver:'promotedSilver',knight:'promotedKnight',lance:'promotedLance',pawn:'tokin'};
-const unpromoteMap: Record<BoardKind,PieceKind>={king:'king',rook:'rook',bishop:'bishop',gold:'gold',silver:'silver',knight:'knight',lance:'lance',pawn:'pawn',dragon:'rook',horse:'bishop',promotedSilver:'silver',promotedKnight:'knight',promotedLance:'lance',tokin:'pawn'};
+const baseKinds:PieceKind[]=['king','rook','bishop','gold','silver','knight','lance','pawn'];
+const promoteMap:Partial<Record<PieceKind,BoardKind>>={rook:'dragon',bishop:'horse',silver:'promotedSilver',knight:'promotedKnight',lance:'promotedLance',pawn:'tokin'};
+const unpromoteMap:Record<BoardKind,PieceKind>={king:'king',rook:'rook',bishop:'bishop',gold:'gold',silver:'silver',knight:'knight',lance:'lance',pawn:'pawn',dragon:'rook',horse:'bishop',promotedSilver:'silver',promotedKnight:'knight',promotedLance:'lance',tokin:'pawn'};
 
 export const emptyHands=():Hands=>({
   sente:Object.fromEntries(baseKinds.map(k=>[k,0])) as Record<PieceKind,number>,
@@ -224,6 +224,7 @@ function moveEquals(a:Move,b:Move):boolean{
 }
 
 export function applyMove(pos:Position,m:Move):Position{
+  if(gameOutcome(pos).ended)throw new Error('GAME_ENDED');
   const legal=legalMoves(pos).find(candidate=>moveEquals(candidate,m));
   if(!legal)throw new Error('ILLEGAL_MOVE');
   return rawApply(pos,legal);
