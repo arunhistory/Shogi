@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
-import { applyMove, gameOutcome, initialPosition } from '../../../src/game/engine';
-import type { Move, Position } from '../../../src/game/types';
+import { initialPosition } from '../../../src/game/engine';
+import type { Move } from '../../../src/game/types';
 import {
   type Env,
   type SocketAttachment,
@@ -16,6 +16,7 @@ import {
   safeEqual,
   sha256,
 } from './common';
+import { validateMoveWithWasm } from './rule-parity';
 import { playerTokenPattern, websocketPlayerToken, websocketProtocol } from './socket-auth';
 
 const joinRequestPattern=/^(passcode|invite):[A-Za-z0-9_-]{8,128}$/;
@@ -192,12 +193,9 @@ export class ShogiRoom extends DurableObject<Env>{
     const expectedRevision=Number(data.expectedRevision);
     if(!Number.isSafeInteger(expectedRevision)||expectedRevision!==state.revision){this.reject(socket,id,'STALE_REVISION',state.revision);return;}
 
-    let position:Position;
-    try{position=applyMove(state.position,move);}catch(error){
-      this.reject(socket,id,error instanceof Error&&error.message==='GAME_ENDED'?'GAME_NOT_PLAYING':'ILLEGAL_MOVE',state.revision);
-      return;
-    }
-    const outcome=gameOutcome(position);
+    const validated=validateMoveWithWasm(state.position,move);
+    if(!validated.ok){this.reject(socket,id,validated.code,state.revision);return;}
+    const {position,outcome}=validated;
     const processed={...state.processed[seat],[id]:fingerprint};
     const terminal=outcome.ended?{
       status:'ended' as const,
