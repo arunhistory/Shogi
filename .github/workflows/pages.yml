@@ -36,10 +36,13 @@ jobs:
       - name: Build Cloudflare deployment bundle
         working-directory: cloudflare
         run: npm run build
-      - name: Stage Cloudflare deployment bundle
+      - name: Stage Cloudflare deployment modules
+        run: node cloudflare/scripts/stage-deploy.mjs
+      - name: Verify staged Cloudflare manifest
         run: |
-          mkdir -p public/deploy
-          cp cloudflare/dist/index-v2.js public/deploy/shogi-system.js
+          test -s public/deploy/manifest.json
+          test -s public/deploy/index-v2.js
+          test "$(find public/deploy -maxdepth 1 -type f -name '*-shogi_engine.wasm' | wc -l)" -eq 1
       - run: npm install
       - run: npm test
       - run: npm run build
