@@ -59,6 +59,14 @@ function socketInbox(socket){
   };
 }
 
+function waitForClose(socket,timeoutMs=5000){
+  if(socket.readyState===WebSocket.CLOSED)return Promise.resolve({code:1006,reason:'already-closed'});
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error('WEBSOCKET_CLOSE_TIMEOUT')),timeoutMs);
+    socket.once('close',(code,reason)=>{clearTimeout(timer);resolve({code,reason:reason.toString()});});
+  });
+}
+
 function openSocket(roomId,playerToken,requestOrigin=origin){
   return new Promise((resolve,reject)=>{
     const socket=new WebSocket(`${wsBase}/v1/rooms/${encodeURIComponent(roomId)}/socket`,[],{origin:requestOrigin});
@@ -148,10 +156,10 @@ async function main(){
   const goteState=await gote.inbox.until(v=>v.type==='state');
   assert.equal(goteState.state.revision,1);
 
-  const oldSenteClosed=new Promise(resolve=>sente1.socket.once('close',(code)=>resolve(code)));
+  const oldSenteClosed=waitForClose(sente1.socket);
   const sente2=await openSocket(created.data.roomId,created.data.playerToken);
   assert.equal((await sente2.inbox.until(v=>v.type==='authenticated')).seat,'sente');
-  assert.equal(await oldSenteClosed,4001,'reconnect must replace the previous same-seat socket');
+  assert.equal((await oldSenteClosed).code,4001,'reconnect must replace the previous same-seat socket');
   await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===1);
 
   sente2.socket.send(JSON.stringify({
@@ -186,31 +194,27 @@ async function main(){
   assert.equal(conflict.code,'REQUEST_ID_CONFLICT');
   assert.equal(conflict.revision,2);
 
-  const disconnectedState=new Promise((resolve,reject)=>{
-    const timeout=setTimeout(()=>reject(new Error('DISCONNECT_STATE_TIMEOUT')),3000);
-    (async()=>{
-      try{
-        const state=await sente2.inbox.until(v=>v.type==='state'&&v.state.connections.gote===0,3000);
-        clearTimeout(timeout);resolve(state);
-      }catch(error){clearTimeout(timeout);reject(error);}
-    })();
-  });
+  const disconnectedState=sente2.inbox.until(v=>v.type==='state'&&v.state.connections.gote===0,5000);
+  const goteClosed=waitForClose(gote.socket);
   gote.socket.close(1000,'test-disconnect');
+  await goteClosed;
   const afterDisconnect=await disconnectedState;
   assert.equal(afterDisconnect.state.status,'playing','disconnect must not become a loss');
   assert.equal(afterDisconnect.state.revision,2);
 
   const invalid=await openSocket(created.data.roomId,'x'.repeat(43));
+  const invalidClosed=waitForClose(invalid.socket);
   const authRejected=await invalid.inbox.until(v=>v.type==='auth-rejected');
   assert.equal(authRejected.type,'auth-rejected');
-  const invalidClose=await new Promise(resolve=>invalid.socket.once('close',code=>resolve(code)));
-  assert.equal(invalidClose,4003);
+  assert.equal((await invalidClosed).code,4003);
 
+  const finalClose=waitForClose(sente2.socket);
   sente2.socket.close(1000,'done');
+  await finalClose;
   console.log('Cloudflare authoritative room E2E: PASS');
 }
 
-main().catch(error=>{
+main().then(()=>process.exit(0)).catch(error=>{
   console.error(error);
-  process.exitCode=1;
+  process.exit(1);
 });
