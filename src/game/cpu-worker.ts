@@ -25,8 +25,15 @@ let cachedWasmUrl:string|null=null;
 let cachedEvaluator:WasmMaterialEvaluator|null=null;
 let loadPromise:Promise<WasmMaterialEvaluator|null>|null=null;
 
-async function evaluatorFor(url?:string):Promise<WasmMaterialEvaluator|null>{
-  if(!url)return null;
+function resolvedWasmUrl(explicit?:string):string{
+  if(explicit)return explicit;
+  // Production Vite workers live under assets/, while public/wasm is copied to wasm/.
+  // If this inference is not valid in a dev server, loading simply falls back to TS.
+  return new URL('../wasm/shogi_engine.wasm',self.location.href).toString();
+}
+
+async function evaluatorFor(explicitUrl?:string):Promise<WasmMaterialEvaluator|null>{
+  const url=resolvedWasmUrl(explicitUrl);
   if(url===cachedWasmUrl&&cachedEvaluator)return cachedEvaluator;
   if(url!==cachedWasmUrl){
     cachedWasmUrl=url;
