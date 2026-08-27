@@ -27,6 +27,19 @@ jobs:
           sudo apt-get install -y emscripten
       - name: Build WebAssembly engine
         run: sh scripts/build-wasm.sh
+      - name: Install Cloudflare toolchain
+        working-directory: cloudflare
+        run: npm install
+      - name: Verify Cloudflare Worker
+        working-directory: cloudflare
+        run: npm run check
+      - name: Build Cloudflare deployment bundle
+        working-directory: cloudflare
+        run: npm run build
+      - name: Stage Cloudflare deployment bundle
+        run: |
+          mkdir -p public/deploy
+          cp cloudflare/dist/index.js public/deploy/shogi-system.js
       - run: npm install
       - run: npm test
       - run: npm run build
