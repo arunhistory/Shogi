@@ -21,6 +21,12 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - uses: actions/configure-pages@v6
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build WebAssembly engine
+        run: sh scripts/build-wasm.sh
       - run: npm install
       - run: npm test
       - run: npm run build
