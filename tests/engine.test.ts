@@ -21,6 +21,10 @@ function blankPosition(turn:'sente'|'gote'='sente'):Position{
   return pos;
 }
 
+function resetHistory(pos:Position):void{
+  pos.history=[{key:positionKey(pos),mover:null,gaveCheck:false}];
+}
+
 describe('shogi engine',()=>{
   it('starts with legal moves, sente to move, and the initial position in history',()=>{
     const p=initialPosition('even');
@@ -47,6 +51,51 @@ describe('shogi engine',()=>{
     p.board[1]![4]={side:'sente',kind:'rook'};
     expect(isCheck(p,'gote')).toBe(true);
     expect(legalMoves(p).some(move=>move.to[0]===0&&move.to[1]===4)).toBe(false);
+  });
+
+  it('rejects nifu and dead-end drops',()=>{
+    const p=blankPosition('sente');
+    p.board[5]![2]={side:'sente',kind:'pawn'};
+    p.hands.sente.pawn=1;
+    p.hands.sente.lance=1;
+    p.hands.sente.knight=1;
+    resetHistory(p);
+    const moves=legalMoves(p);
+    const pawnDrops=moves.filter(move=>move.drop==='pawn');
+    expect(pawnDrops.some(move=>move.to[1]===2)).toBe(false);
+    expect(pawnDrops.some(move=>move.to[0]===0)).toBe(false);
+    expect(moves.filter(move=>move.drop==='lance').some(move=>move.to[0]===0)).toBe(false);
+    expect(moves.filter(move=>move.drop==='knight').some(move=>move.to[0]<=1)).toBe(false);
+  });
+
+  it('forces promotion when an unpromoted piece would otherwise have no legal destination',()=>{
+    const p=blankPosition('sente');
+    p.board[1]![0]={side:'sente',kind:'pawn'};
+    resetHistory(p);
+    const moves=legalMoves(p).filter(move=>move.from?.[0]===1&&move.from[1]===0&&move.to[0]===0&&move.to[1]===0);
+    expect(moves).toHaveLength(1);
+    expect(moves[0]?.promote).toBe(true);
+  });
+
+  it('returns a captured promoted piece to the hand as its unpromoted kind',()=>{
+    const p=blankPosition('sente');
+    p.board[4]![4]={side:'sente',kind:'gold'};
+    p.board[3]![4]={side:'gote',kind:'tokin'};
+    resetHistory(p);
+    const next=applyMove(p,{from:[4,4],to:[3,4]});
+    expect(next.hands.sente.pawn).toBe(1);
+    expect(next.hands.sente.tokin).toBeUndefined();
+  });
+
+  it('does not allow a move that exposes its own king to check',()=>{
+    const p=blankPosition('sente');
+    p.board[0]![4]=null;
+    p.board[0]![0]={side:'gote',kind:'king'};
+    p.board[0]![4]={side:'gote',kind:'rook'};
+    p.board[7]![4]={side:'sente',kind:'gold'};
+    resetHistory(p);
+    expect(isCheck(p,'sente')).toBe(false);
+    expect(legalMoves(p).some(move=>move.from?.[0]===7&&move.from[1]===4&&move.to[0]===7&&move.to[1]===3)).toBe(false);
   });
 
   it('classifies fourfold repetition separately from perpetual check',()=>{
@@ -79,5 +128,21 @@ describe('shogi engine',()=>{
     ];
     expect(repetitionStatus(p)).toEqual({kind:'perpetual-check',loser:'sente'});
     expect(gameOutcome(p)).toEqual({ended:true,reason:'perpetual-check',winner:'gote',loser:'sente'});
+  });
+
+  it('rejects normal moves after a terminal repetition result',()=>{
+    const p=blankPosition('sente');
+    const key=positionKey(p);
+    p.history=[
+      {key,mover:null,gaveCheck:false},
+      {key:'a',mover:'sente',gaveCheck:false},
+      {key,mover:'gote',gaveCheck:false},
+      {key:'b',mover:'sente',gaveCheck:false},
+      {key,mover:'gote',gaveCheck:false},
+      {key:'c',mover:'sente',gaveCheck:false},
+      {key,mover:'gote',gaveCheck:false},
+    ];
+    const move=legalMoves(p)[0]!;
+    expect(()=>applyMove(p,move)).toThrow('GAME_ENDED');
   });
 });
