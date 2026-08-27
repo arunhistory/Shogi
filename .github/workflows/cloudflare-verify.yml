@@ -1,0 +1,30 @@
+name: cloudflare-verify
+on:
+  push:
+    paths:
+      - 'cloudflare/**'
+      - 'src/game/**'
+      - '.github/workflows/cloudflare-verify.yml'
+  pull_request:
+    paths:
+      - 'cloudflare/**'
+      - 'src/game/**'
+      - '.github/workflows/cloudflare-verify.yml'
+jobs:
+  verify-cloudflare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install pinned Cloudflare toolchain
+        working-directory: cloudflare
+        run: npm install
+      - name: Type check Worker and shared shogi engine
+        working-directory: cloudflare
+        run: npm run check
+      - name: Bundle Worker without deployment
+        working-directory: cloudflare
+        run: npm run build
