@@ -117,7 +117,7 @@ function play(){
     cell.disabled=!humanCanOperate;
     if(selected?.[0]===y&&selected[1]===x)cell.classList.add('selected');
     if(candidates.some(move=>move.to[0]===y&&move.to[1]===x))cell.classList.add('legal');
-    if(piece){cell.textContent=names[piece.kind];if(piece.side==='gote')cell.classList.add('gote');}
+    if(piece){cell.textContent=names[piece.kind]??piece.kind;if(piece.side==='gote')cell.classList.add('gote');}
     cell.addEventListener('click',()=>clickSquare(y,x,moves));
     board.append(cell);
   }
