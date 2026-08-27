@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 
 const MAGIC=0x53484749;
 const WORDS=97;
+const HISTORY_MAGIC=0x48535431;
+const HISTORY_ENTRY_WORDS=5;
+const FNV_PRIME=1099511628211n;
+const FNV_PRIMARY_SEED=1469598103934665603n;
+const FNV_SECONDARY_SEED=0x84222325cbf29ce4n;
+const MASK_64=(1n<<64n)-1n;
 const wasmPath=new URL('../public/wasm/shogi_engine.wasm',import.meta.url);
 const bytes=await readFile(wasmPath);
 const {instance}=await WebAssembly.instantiate(bytes,{});
@@ -10,7 +16,9 @@ const wasm=instance.exports;
 
 for(const name of [
   'memory','shogi_engine_version','shogi_input_buffer','shogi_input_capacity',
+  'shogi_history_buffer','shogi_history_capacity',
   'shogi_legal_move_count','shogi_legal_move_at','shogi_is_check','shogi_is_mate',
+  'shogi_repetition_status_with_history','shogi_search_best_move_with_history',
   'shogi_search_best_move','shogi_nodes_searched',
 ])assert.ok(wasm[name],`missing export: ${name}`);
 assert.ok(wasm.shogi_engine_version()>=3,'unexpected engine version');
@@ -19,6 +27,10 @@ const pointer=wasm.shogi_input_buffer();
 const capacity=wasm.shogi_input_capacity();
 assert.ok(capacity>=WORDS,'input buffer too small');
 const input=new Int32Array(wasm.memory.buffer,pointer,capacity);
+const historyPointer=wasm.shogi_history_buffer();
+const historyCapacity=wasm.shogi_history_capacity();
+assert.ok(historyCapacity>=2+HISTORY_ENTRY_WORDS*4,'history buffer too small');
+const historyInput=new Int32Array(wasm.memory.buffer,historyPointer,historyCapacity);
 
 function writePosition({turn=1,board,hands}){
   const words=new Int32Array(WORDS);
@@ -28,6 +40,45 @@ function writePosition({turn=1,board,hands}){
   words.set(hands??new Int32Array(14),83);
   input.fill(0,0,WORDS);
   input.set(words,0);
+}
+
+function mixHash(hash,value){
+  return ((hash^BigInt(value&0xff))*FNV_PRIME)&MASK_64;
+}
+
+function hashPosition({turn=1,board,hands},seed){
+  let hash=seed;
+  for(const code of board)hash=mixHash(hash,code+16);
+  for(const count of hands??new Int32Array(14))hash=mixHash(hash,count);
+  hash=mixHash(hash,turn===1?1:2);
+  return hash;
+}
+
+function splitU64(value){
+  return[
+    Number(BigInt.asIntN(32,value&0xffffffffn)),
+    Number(BigInt.asIntN(32,(value>>32n)&0xffffffffn)),
+  ];
+}
+
+function writeHistory(position,entries){
+  const required=2+entries.length*HISTORY_ENTRY_WORDS;
+  assert.ok(required<=historyCapacity,'history test exceeds buffer capacity');
+  historyInput.fill(0,0,required);
+  historyInput[0]=HISTORY_MAGIC;
+  historyInput[1]=entries.length;
+  const [primaryLow,primaryHigh]=splitU64(hashPosition(position,FNV_PRIMARY_SEED));
+  const [secondaryLow,secondaryHigh]=splitU64(hashPosition(position,FNV_SECONDARY_SEED));
+  let offset=2;
+  for(const entry of entries){
+    const moverCode=entry.mover===1?1:entry.mover===-1?2:0;
+    historyInput[offset++]=primaryLow;
+    historyInput[offset++]=primaryHigh;
+    historyInput[offset++]=secondaryLow;
+    historyInput[offset++]=secondaryHigh;
+    historyInput[offset++]=moverCode|(entry.gaveCheck?4:0);
+  }
+  return required;
 }
 
 function initialBoard(){
@@ -66,12 +117,45 @@ function decode(code){
   };
 }
 
-writePosition({board:initialBoard()});
+const initialState={turn:1,board:initialBoard(),hands:new Int32Array(14)};
+writePosition(initialState);
 const initialLegal=legalCodes();
 assert.ok(initialLegal.length>0,'initial position has no legal moves');
 const best=wasm.shogi_search_best_move(WORDS,2,20_000);
 assert.ok(initialLegal.includes(best),'search returned a move outside the legal root set');
 assert.ok(wasm.shogi_nodes_searched()>0,'search did not visit nodes');
+const initialHistoryWords=writeHistory(initialState,[{mover:0,gaveCheck:false}]);
+assert.equal(wasm.shogi_repetition_status_with_history(WORDS,initialHistoryWords),0,'initial history was misclassified as repetition');
+const historyBest=wasm.shogi_search_best_move_with_history(WORDS,initialHistoryWords,2,20_000);
+assert.ok(initialLegal.includes(historyBest),'history-aware search returned a move outside the legal root set');
+
+const normalHistoryWords=writeHistory(initialState,[
+  {mover:0,gaveCheck:false},
+  {mover:1,gaveCheck:false},
+  {mover:-1,gaveCheck:false},
+  {mover:1,gaveCheck:false},
+]);
+assert.equal(wasm.shogi_repetition_status_with_history(WORDS,normalHistoryWords),1,'normal fourfold repetition was not detected');
+assert.equal(wasm.shogi_search_best_move_with_history(WORDS,normalHistoryWords,2,20_000),-1,'search continued from an already repeated root');
+
+const sentePerpetualWords=writeHistory(initialState,[
+  {mover:0,gaveCheck:false},
+  {mover:1,gaveCheck:true},
+  {mover:-1,gaveCheck:false},
+  {mover:1,gaveCheck:true},
+]);
+assert.equal(wasm.shogi_repetition_status_with_history(WORDS,sentePerpetualWords),2,'sente perpetual-check repetition was not detected');
+
+const gotePerpetualWords=writeHistory(initialState,[
+  {mover:0,gaveCheck:false},
+  {mover:-1,gaveCheck:true},
+  {mover:1,gaveCheck:false},
+  {mover:-1,gaveCheck:true},
+]);
+assert.equal(wasm.shogi_repetition_status_with_history(WORDS,gotePerpetualWords),3,'gote perpetual-check repetition was not detected');
+
+const mismatchedHistoryWords=writeHistory({...initialState,turn:-1},[{mover:0,gaveCheck:false}]);
+assert.equal(wasm.shogi_repetition_status_with_history(WORDS,mismatchedHistoryWords),-1,'history unrelated to the root position was accepted');
 
 const noKingCapture=new Int32Array(81);
 noKingCapture[0*9+4]=-8;
