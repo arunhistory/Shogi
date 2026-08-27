@@ -5,7 +5,7 @@ export type OnlinePhase='waiting'|'playing'|'ended';
 
 export interface AuthoritativeRoomState {
   roomId: string;
-  version: number;
+  revision: number;
   phase: OnlinePhase;
   position: Position;
   outcome: GameOutcome;
@@ -15,7 +15,7 @@ export interface AuthoritativeRoomState {
 export interface MoveRequest {
   requestId: string;
   roomId: string;
-  expectedVersion: number;
+  expectedRevision: number;
   move: Move;
 }
 
@@ -29,7 +29,7 @@ const requestIdPattern=/^[A-Za-z0-9_-]{16,128}$/;
 export function createAuthoritativeRoom(roomId:string,handicap:Handicap='even'):AuthoritativeRoomState{
   return{
     roomId,
-    version:0,
+    revision:0,
     phase:'waiting',
     position:initialPosition(handicap),
     outcome:{ended:false},
@@ -54,7 +54,7 @@ export function applyAuthoritativeMove(
   if(state.processedMoveIds.includes(request.requestId))return{ok:true,duplicate:true,state};
   if(state.phase!=='playing')return{ok:false,code:'NOT_PLAYING',state};
   if(state.position.turn!==authenticatedSeat)return{ok:false,code:'NOT_YOUR_TURN',state};
-  if(request.expectedVersion!==state.version)return{ok:false,code:'STALE_POSITION',state};
+  if(request.expectedRevision!==state.revision)return{ok:false,code:'STALE_POSITION',state};
 
   let nextPosition:Position;
   try{
@@ -66,7 +66,7 @@ export function applyAuthoritativeMove(
   const outcome=gameOutcome(nextPosition);
   const next:AuthoritativeRoomState={
     ...state,
-    version:state.version+1,
+    revision:state.revision+1,
     position:nextPosition,
     outcome,
     phase:outcome.ended?'ended':'playing',
