@@ -141,11 +141,6 @@ export class ShogiRoom extends DurableObject<Env>{
       const seat=(state.players.sente&&safeEqual(tokenHash,state.players.sente))?'sente'
         :(state.players.gote&&safeEqual(tokenHash,state.players.gote))?'gote':null;
       if(!seat){this.rejectAuthentication(socket);return;}
-      for(const existing of this.ctx.getWebSockets()){
-        if(existing===socket)continue;
-        const other=existing.deserializeAttachment() as SocketAttachment|undefined;
-        if(other?.authenticated&&other.seat===seat){try{existing.close(4001,'reconnected');}catch{/* already closed */}}
-      }
       socket.serializeAttachment({...attachment,authenticated:true,seat} satisfies SocketAttachment);
       this.send(socket,{type:'authenticated',seat});
       this.sendState(socket,state);
