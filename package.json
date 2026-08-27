@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc && vite build",
     "dev": "vite",
-    "test": "vitest run"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:browser": "node scripts/browser-smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
