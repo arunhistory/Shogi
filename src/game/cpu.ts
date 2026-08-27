@@ -1,4 +1,4 @@
-import { isCheck, legalMoves, positionKey, repetitionStatus } from './engine';
+import { applyLegalMoveUnchecked, isCheck, legalMoves, positionKey, repetitionStatus } from './engine';
 import type { BoardKind, CpuLevel, Move, Position, Side } from './types';
 
 interface CpuBudget {
@@ -7,6 +7,7 @@ interface CpuBudget {
   beginnerPool?: number;
 }
 
+// These are computation ceilings, not shogi clock settings. Clock/seconds remain undecided.
 export const CPU_BUDGETS:Record<CpuLevel,CpuBudget>={
   beginner:{maxDepth:1,timeMs:120,beginnerPool:6},
   intermediate:{maxDepth:2,timeMs:400},
@@ -16,36 +17,24 @@ export const CPU_BUDGETS:Record<CpuLevel,CpuBudget>={
 };
 
 const values:Record<BoardKind,number>={
-  king:100000,
-  rook:1000,
-  bishop:900,
-  gold:600,
-  silver:520,
-  knight:360,
-  lance:320,
-  pawn:100,
-  dragon:1350,
-  horse:1250,
-  promotedSilver:600,
-  promotedKnight:600,
-  promotedLance:600,
-  tokin:600,
+  king:100000,rook:1000,bishop:900,gold:600,silver:520,knight:360,lance:320,pawn:100,
+  dragon:1350,horse:1250,promotedSilver:600,promotedKnight:600,promotedLance:600,tokin:600,
 };
-
-const baseValue:Record<string,number>={king:100000,rook:1000,bishop:900,gold:600,silver:520,knight:360,lance:320,pawn:100};
+const handValues:Record<string,number>={king:100000,rook:1000,bishop:900,gold:600,silver:520,knight:360,lance:320,pawn:100};
 const other=(side:Side):Side=>side==='sente'?'gote':'sente';
 const TIMEOUT=Symbol('CPU_SEARCH_TIMEOUT');
+
+interface SearchState { deadline:number; nodes:number }
 
 function staticEvaluation(pos:Position,perspective:Side):number{
   let score=0;
   for(const row of pos.board)for(const piece of row){
     if(!piece)continue;
-    const value=values[piece.kind];
-    score+=piece.side===perspective?value:-value;
+    score+=(piece.side===perspective?1:-1)*values[piece.kind];
   }
   for(const side of ['sente','gote'] as const){
     const sign=side===perspective?1:-1;
-    for(const [kind,count] of Object.entries(pos.hands[side]))score+=sign*(baseValue[kind]??0)*count;
+    for(const [kind,count] of Object.entries(pos.hands[side]))score+=sign*(handValues[kind]??0)*count;
   }
   if(isCheck(pos,other(perspective)))score+=35;
   if(isCheck(pos,perspective))score-=35;
@@ -61,38 +50,11 @@ function moveOrderingScore(pos:Position,move:Move):number{
   return score;
 }
 
-function applyKnownLegal(pos:Position,move:Move):Position{
-  // Search only receives moves returned by legalMoves. Reusing the public engine keeps
-  // CPU and human rules identical, as required by the blueprint.
-  const nextBoard=pos.board.map(row=>row.map(piece=>piece?{...piece}:null));
-  const nextHands={sente:{...pos.hands.sente},gote:{...pos.hands.gote}};
-  const mover=pos.turn;
-  const next:Position={board:nextBoard,hands:nextHands,turn:other(mover),ply:pos.ply+1,history:[...pos.history]};
-  const unpromote:Record<BoardKind,keyof typeof nextHands.sente>={king:'king',rook:'rook',bishop:'bishop',gold:'gold',silver:'silver',knight:'knight',lance:'lance',pawn:'pawn',dragon:'rook',horse:'bishop',promotedSilver:'silver',promotedKnight:'knight',promotedLance:'lance',tokin:'pawn'};
-  const promote:Partial<Record<BoardKind,BoardKind>>={rook:'dragon',bishop:'horse',silver:'promotedSilver',knight:'promotedKnight',lance:'promotedLance',pawn:'tokin'};
-  if(move.drop){
-    next.board[move.to[0]]![move.to[1]]={side:mover,kind:move.drop};
-    next.hands[mover][move.drop]--;
-  }else if(move.from){
-    const [fy,fx]=move.from;
-    let piece=next.board[fy]![fx]!;
-    const captured=next.board[move.to[0]]![move.to[1]];
-    if(captured)next.hands[mover][unpromote[captured.kind]]++;
-    next.board[fy]![fx]=null;
-    if(move.promote&&promote[piece.kind])piece={...piece,kind:promote[piece.kind]!};
-    next.board[move.to[0]]![move.to[1]]=piece;
-  }
-  next.history.push({key:positionKey(next),mover,gaveCheck:isCheck(next,next.turn)});
-  return next;
-}
-
-function terminalScore(pos:Position,perspective:Side,plyFromRoot:number):number|null{
+function repetitionScore(pos:Position,perspective:Side,plyFromRoot:number):number|null{
   const repetition=repetitionStatus(pos);
   if(repetition.kind==='normal')return 0;
-  if(repetition.kind==='perpetual-check')return repetition.loser===perspective?-900000+plyFromRoot:900000-plyFromRoot;
-  const moves=legalMoves(pos);
-  if(moves.length===0&&isCheck(pos,pos.turn)){
-    return pos.turn===perspective?-1000000+plyFromRoot:1000000-plyFromRoot;
+  if(repetition.kind==='perpetual-check'){
+    return repetition.loser===perspective?-900000+plyFromRoot:900000-plyFromRoot;
   }
   return null;
 }
@@ -103,22 +65,31 @@ function alphaBeta(
   alpha:number,
   beta:number,
   perspective:Side,
-  deadline:number,
   plyFromRoot:number,
   table:Map<string,number>,
+  state:SearchState,
 ):number{
-  if(Date.now()>=deadline)throw TIMEOUT;
-  const terminal=terminalScore(pos,perspective,plyFromRoot);
-  if(terminal!==null)return terminal;
+  if(Date.now()>=state.deadline)throw TIMEOUT;
+  state.nodes++;
+
+  const repeated=repetitionScore(pos,perspective,plyFromRoot);
+  if(repeated!==null)return repeated;
   if(depth===0)return staticEvaluation(pos,perspective);
+
   const key=`${positionKey(pos)}|${depth}|${perspective}`;
   const cached=table.get(key);
   if(cached!==undefined)return cached;
+
   const moves=legalMoves(pos).sort((a,b)=>moveOrderingScore(pos,b)-moveOrderingScore(pos,a));
+  if(moves.length===0){
+    if(isCheck(pos,pos.turn))return pos.turn===perspective?-1000000+plyFromRoot:1000000-plyFromRoot;
+    return 0;
+  }
+
   const maximizing=pos.turn===perspective;
   let best=maximizing?-Infinity:Infinity;
   for(const move of moves){
-    const score=alphaBeta(applyKnownLegal(pos,move),depth-1,alpha,beta,perspective,deadline,plyFromRoot+1,table);
+    const score=alphaBeta(applyLegalMoveUnchecked(pos,move),depth-1,alpha,beta,perspective,plyFromRoot+1,table,state);
     if(maximizing){
       best=Math.max(best,score);
       alpha=Math.max(alpha,best);
@@ -135,18 +106,18 @@ function alphaBeta(
 export interface CpuSearchResult {
   move: Move | null;
   completedDepth: number;
-  nodesApproximation: number;
+  nodesVisited: number;
 }
 
 export function chooseCpuMove(pos:Position,level:CpuLevel):CpuSearchResult{
   const legal=legalMoves(pos);
-  if(legal.length===0)return{move:null,completedDepth:0,nodesApproximation:0};
+  if(legal.length===0)return{move:null,completedDepth:0,nodesVisited:0};
+
   const budget=CPU_BUDGETS[level];
-  const deadline=Date.now()+budget.timeMs;
+  const state:SearchState={deadline:Date.now()+budget.timeMs,nodes:0};
   const perspective=pos.turn;
   let bestMove=legal[0]!;
   let completedDepth=0;
-  let nodesApproximation=0;
   let ranked:{move:Move;score:number}[]=[];
 
   for(let depth=1;depth<=budget.maxDepth;depth++){
@@ -156,8 +127,8 @@ export function chooseCpuMove(pos:Position,level:CpuLevel):CpuSearchResult{
       const ordered=[...legal].sort((a,b)=>moveOrderingScore(pos,b)-moveOrderingScore(pos,a));
       let alpha=-Infinity;
       for(const move of ordered){
-        if(Date.now()>=deadline)throw TIMEOUT;
-        const score=alphaBeta(applyKnownLegal(pos,move),depth-1,alpha,Infinity,perspective,deadline,1,table);
+        if(Date.now()>=state.deadline)throw TIMEOUT;
+        const score=alphaBeta(applyLegalMoveUnchecked(pos,move),depth-1,alpha,Infinity,perspective,1,table,state);
         current.push({move,score});
         alpha=Math.max(alpha,score);
       }
@@ -170,13 +141,13 @@ export function chooseCpuMove(pos:Position,level:CpuLevel):CpuSearchResult{
       ranked=current;
       bestMove=current[0]!.move;
       completedDepth=depth;
-      nodesApproximation+=table.size;
     }
   }
 
+  // Beginner deliberately varies among several reasonable moves; still pure algorithmic search.
   if(level==='beginner'&&ranked.length>1){
     const pool=ranked.slice(0,Math.min(budget.beginnerPool??1,ranked.length));
     bestMove=pool[Math.floor(Math.random()*pool.length)]!.move;
   }
-  return{move:bestMove,completedDepth,nodesApproximation};
+  return{move:bestMove,completedDepth,nodesVisited:state.nodes};
 }
