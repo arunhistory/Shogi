@@ -1,3 +1,4 @@
+import { decodePositionKey } from './position-key';
 import type { BoardKind, Move, PieceKind, Position, RepetitionStatus, Side } from './types';
 
 export type WasmMaterialEvaluator=(position:Position,perspective:Side)=>number;
@@ -94,12 +95,8 @@ function encodePosition(position:Position):Int32Array{
 }
 
 function positionFromKey(key:string):Position{
-  if(typeof key!=='string'||key.length===0||key.length>65_536)throw new Error('INVALID_HISTORY_KEY');
-  let parsed:unknown;
-  try{parsed=JSON.parse(key);}catch{throw new Error('INVALID_HISTORY_KEY');}
-  if(!Array.isArray(parsed)||parsed.length!==3)throw new Error('INVALID_HISTORY_KEY');
-  const [turn,board,hands]=parsed;
-  return{turn:turn as Side,board:board as Position['board'],hands:hands as Position['hands'],ply:0,history:[]};
+  const parsed=decodePositionKey(key);
+  return{...parsed,ply:0,history:[]};
 }
 
 function mixHash(hash:bigint,value:number):bigint{
