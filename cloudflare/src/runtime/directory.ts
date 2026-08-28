@@ -7,9 +7,13 @@ import {
   errorJson,
   inviteUrl,
   jsonHeaders,
+  oppositeSide,
   parseHandicap,
+  parseOrder,
+  parseSide,
   passcodeAlphabet,
   randomPasscode,
+  randomSide,
   randomToken,
   readJson,
   requestId,
@@ -104,18 +108,24 @@ export class ShogiDirectory extends DurableObject<Env>{
   private async create(body:Record<string,unknown>,ip:string):Promise<Response>{
     const id=requestId(body.requestId);
     const handicap=parseHandicap(body.handicap);
+    const handicapSide=body.handicapSide===undefined?'gote':parseSide(body.handicapSide);
+    const order=body.order===undefined?'sente':parseOrder(body.order);
     const appUrl=validateAppUrl(body.appUrl);
     const opKey=`create:${id}`;
     const existing=await this.ctx.storage.get<CreateOperation>(opKey);
     if(existing){
-      if(existing.kind!=='create'||existing.requestId!==id||existing.handicap!==handicap||existing.appUrl!==appUrl)return errorJson('REQUEST_ID_CONFLICT',409);
+      if(
+        existing.kind!=='create'||existing.requestId!==id||existing.handicap!==handicap||
+        existing.handicapSide!==handicapSide||existing.order!==order||existing.appUrl!==appUrl
+      )return errorJson('REQUEST_ID_CONFLICT',409);
       return await this.resumeCreate(opKey,existing);
     }
 
     await this.enforceRateLimit(ip,'create');
     const passcode=await this.allocatePasscode(opKey);
+    const creatorSide=order==='random'?randomSide():order;
     const operation:CreateOperation={
-      kind:'create',phase:'pending',requestId:id,handicap,appUrl,
+      kind:'create',phase:'pending',requestId:id,handicap,handicapSide,order,creatorSide,appUrl,
       roomId:randomToken(18),inviteToken:randomToken(24),passcode,
     };
     await this.ctx.storage.put(opKey,operation);
@@ -123,7 +133,7 @@ export class ShogiDirectory extends DurableObject<Env>{
   }
 
   private async resumeCreate(opKey:string,operation:CreateOperation):Promise<Response>{
-    const playerToken=await this.derivePlayerToken(`sente:${operation.requestId}:${operation.roomId}`);
+    const playerToken=await this.derivePlayerToken(`creator:${operation.requestId}:${operation.roomId}`);
     const creatorTokenHash=await sha256(playerToken);
     const init=await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request('https://internal/init',{
       method:'POST',
@@ -131,6 +141,9 @@ export class ShogiDirectory extends DurableObject<Env>{
       body:JSON.stringify({
         roomId:operation.roomId,
         handicap:operation.handicap,
+        handicapSide:operation.handicapSide,
+        order:operation.order,
+        creatorSide:operation.creatorSide,
         creatorTokenHash,
         creationRequestId:operation.requestId,
       }),
@@ -151,8 +164,11 @@ export class ShogiDirectory extends DurableObject<Env>{
       inviteUrl:inviteUrl(operation.appUrl,operation.inviteToken),
       passcode:operation.passcode,
       playerToken,
-      seat:'sente',
+      seat:operation.creatorSide,
       revision:room.revision,
+      handicap:operation.handicap,
+      handicapSide:operation.handicapSide,
+      order:operation.order,
     };
     return responseJson(result);
   }
@@ -188,7 +204,7 @@ export class ShogiDirectory extends DurableObject<Env>{
 
   private async resumeJoin(opKey:string,operation:JoinOperation):Promise<Response>{
     const joinRequestId=`${operation.method}:${operation.requestId}`;
-    const playerToken=await this.derivePlayerToken(`gote:${joinRequestId}:${operation.roomId}`);
+    const playerToken=await this.derivePlayerToken(`guest:${joinRequestId}:${operation.roomId}`);
     const playerTokenHash=await sha256(playerToken);
     const joined=await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request('https://internal/join',{
       method:'POST',
@@ -196,15 +212,18 @@ export class ShogiDirectory extends DurableObject<Env>{
       body:JSON.stringify({playerTokenHash,joinRequestId}),
     }));
     if(!joined.ok)return new Response(joined.body,{status:joined.status,headers:jsonHeaders});
-    const room=await joined.json() as {revision:number};
+    const room=await joined.json() as {revision:number;seat:'sente'|'gote';handicap:Handshake['handicap'];handicapSide:Handshake['handicapSide'];order:Handshake['order']};
     await this.ctx.storage.put(opKey,{...operation,phase:'done'} satisfies JoinOperation);
     const result:Handshake={
       roomId:operation.roomId,
       inviteUrl:inviteUrl(operation.appUrl,operation.inviteToken),
       passcode:operation.passcode,
       playerToken,
-      seat:'gote',
+      seat:room.seat,
       revision:room.revision,
+      handicap:room.handicap,
+      handicapSide:room.handicapSide,
+      order:room.order,
     };
     return responseJson(result);
   }
