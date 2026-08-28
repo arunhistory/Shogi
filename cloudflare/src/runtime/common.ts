@@ -1,4 +1,6 @@
 import { HANDICAP_RULE_LIST, isHandicap } from '../../../src/game/handicaps';
+import { isOrderPreference, isSide } from '../../../src/game/setup';
+import type { OrderPreference } from '../../../src/game/setup';
 import type { Handicap, Move, PieceKind, Position, Side } from '../../../src/game/types';
 
 export interface Env {
@@ -15,13 +17,19 @@ export type ContentKey='terms'|'credits'|'licenses';
 export interface StoredRoomState {
   roomId:string;
   handicap:Handicap;
+  handicapSide?:Side;
+  order?:OrderPreference;
+  creatorSide?:Side;
   creationRequestId:string;
   goteJoinRequestId?:string;
+  joinRequestId?:string;
   revision:number;
   status:RoomStatus;
   position:Position;
   players:{sente:string|null;gote:string|null};
   processed:{sente:Record<string,string>;gote:Record<string,string>};
+  startedAt?:number;
+  endedAt?:number;
   winner?:Side;
   resultReason?:string;
 }
@@ -39,6 +47,9 @@ export interface Handshake {
   playerToken:string;
   seat:Side;
   revision:number;
+  handicap:Handicap;
+  handicapSide:Side;
+  order:OrderPreference;
 }
 
 export interface CreateOperation {
@@ -46,6 +57,9 @@ export interface CreateOperation {
   phase:'pending'|'done';
   requestId:string;
   handicap:Handicap;
+  handicapSide:Side;
+  order:OrderPreference;
+  creatorSide:Side;
   appUrl:string;
   roomId:string;
   inviteToken:string;
@@ -95,6 +109,14 @@ export function randomPasscode(length=8):string{
   return out;
 }
 
+export function randomSide():Side{
+  const data=new Uint8Array(1);
+  crypto.getRandomValues(data);
+  return (data[0]!&1)===0?'sente':'gote';
+}
+
+export function oppositeSide(side:Side):Side{return side==='sente'?'gote':'sente';}
+
 export async function sha256(value:string):Promise<string>{
   const bytes=new TextEncoder().encode(value);
   const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
@@ -128,6 +150,20 @@ export function parseHandicap(value:unknown):Handicap{
   if(!isHandicap(value))throw new Error('INVALID_HANDICAP');
   return value;
 }
+
+export function parseSide(value:unknown):Side{
+  if(!isSide(value))throw new Error('INVALID_SIDE');
+  return value;
+}
+
+export function parseOrder(value:unknown):OrderPreference{
+  if(!isOrderPreference(value))throw new Error('INVALID_ORDER');
+  return value;
+}
+
+export function normalizeHandicapSide(state:StoredRoomState):Side{return isSide(state.handicapSide)?state.handicapSide:'gote';}
+export function normalizeOrder(state:StoredRoomState):OrderPreference{return isOrderPreference(state.order)?state.order:'sente';}
+export function normalizeCreatorSide(state:StoredRoomState):Side{return isSide(state.creatorSide)?state.creatorSide:'sente';}
 
 export function parseMove(value:unknown):Move{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('INVALID_MOVE');
@@ -205,6 +241,11 @@ export function publicState(state:StoredRoomState,ctx:DurableObjectState){
     position:state.position,
     status:state.status,
     connections,
+    handicap:state.handicap,
+    handicapSide:normalizeHandicapSide(state),
+    order:normalizeOrder(state),
+    ...(state.startedAt?{startedAt:state.startedAt}:{}),
+    ...(state.endedAt?{endedAt:state.endedAt}:{}),
     ...(state.winner?{winner:state.winner}:{}),
     ...(state.resultReason?{resultReason:state.resultReason}:{}),
   };
