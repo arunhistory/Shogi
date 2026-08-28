@@ -306,6 +306,10 @@ function isSide(value) {
   return value === "sente" || value === "gote";
 }
 __name(isSide, "isSide");
+function isHandicapTarget(value) {
+  return value === "self" || value === "opponent";
+}
+__name(isHandicapTarget, "isHandicapTarget");
 function configuredInitialPosition(handicap = "even", handicapSide = "gote") {
   const position = initialPosition("even");
   if (handicap !== "even") {
@@ -419,6 +423,11 @@ function parseHandicap(value) {
   return value;
 }
 __name(parseHandicap, "parseHandicap");
+function parseHandicapTarget(value) {
+  if (!isHandicapTarget(value)) throw new Error("INVALID_HANDICAP_TARGET");
+  return value;
+}
+__name(parseHandicapTarget, "parseHandicapTarget");
 function parseSide(value) {
   if (!isSide(value)) throw new Error("INVALID_SIDE");
   return value;
@@ -533,22 +542,24 @@ __name(websocketPlayerToken, "websocketPlayerToken");
 
 // src/runtime/directory.ts
 import { DurableObject } from "cloudflare:workers";
-function encodeBase64Url(bytes) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-__name(encodeBase64Url, "encodeBase64Url");
 function normalizeCreateOperation(operation) {
   const stored = operation;
+  const creatorSide = isSide(stored.creatorSide) ? stored.creatorSide : "sente";
+  const handicapSide = isSide(stored.handicapSide) ? stored.handicapSide : "gote";
+  const handicapTarget = isHandicapTarget(stored.handicapTarget) ? stored.handicapTarget : handicapSide === creatorSide ? "self" : "opponent";
   return {
     ...operation,
-    handicapSide: isSide(stored.handicapSide) ? stored.handicapSide : "gote",
+    handicapTarget,
+    handicapSide,
     order: isOrderPreference(stored.order) ? stored.order : "sente",
-    creatorSide: isSide(stored.creatorSide) ? stored.creatorSide : "sente"
+    creatorSide
   };
 }
 __name(normalizeCreateOperation, "normalizeCreateOperation");
+function resolvedHandicapSide(target, creatorSide) {
+  return target === "self" ? creatorSide : oppositeSide(creatorSide);
+}
+__name(resolvedHandicapSide, "resolvedHandicapSide");
 var ShogiDirectory = class extends DurableObject {
   static {
     __name(this, "ShogiDirectory");
@@ -634,24 +645,32 @@ var ShogiDirectory = class extends DurableObject {
   async create(body, ip) {
     const id = requestId(body.requestId);
     const handicap = parseHandicap(body.handicap);
-    const handicapSide = body.handicapSide === void 0 ? "gote" : parseSide(body.handicapSide);
+    const requestedTarget = body.handicapTarget === void 0 ? null : parseHandicapTarget(body.handicapTarget);
+    const legacyHandicapSide = body.handicapSide === void 0 ? null : parseSide(body.handicapSide);
+    if (requestedTarget && legacyHandicapSide) return errorJson("AMBIGUOUS_HANDICAP_TARGET", 400);
     const order = body.order === void 0 ? "sente" : parseOrder(body.order);
     const appUrl = validateAppUrl(body.appUrl);
     const opKey = `create:${id}`;
     const stored = await this.ctx.storage.get(opKey);
     if (stored) {
       const existing = normalizeCreateOperation(stored);
-      if (existing.kind !== "create" || existing.requestId !== id || existing.handicap !== handicap || existing.handicapSide !== handicapSide || existing.order !== order || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
+      const effectiveLegacySide = legacyHandicapSide ?? "gote";
+      const target = requestedTarget ?? (effectiveLegacySide === existing.creatorSide ? "self" : "opponent");
+      const legacySideMatches = requestedTarget !== null || existing.handicapSide === effectiveLegacySide;
+      if (existing.kind !== "create" || existing.requestId !== id || existing.handicap !== handicap || existing.handicapTarget !== target || !legacySideMatches || existing.order !== order || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
       return await this.resumeCreate(opKey, existing);
     }
     await this.enforceRateLimit(ip, "create");
     const passcode = await this.allocatePasscode(opKey);
     const creatorSide = order === "random" ? randomSide() : order;
+    const handicapSide = legacyHandicapSide ?? resolvedHandicapSide(requestedTarget ?? "opponent", creatorSide);
+    const handicapTarget = requestedTarget ?? (handicapSide === creatorSide ? "self" : "opponent");
     const operation = {
       kind: "create",
       phase: "pending",
       requestId: id,
       handicap,
+      handicapTarget,
       handicapSide,
       order,
       creatorSide,
@@ -767,6 +786,12 @@ var ShogiDirectory = class extends DurableObject {
     return responseJson(result);
   }
 };
+function encodeBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(encodeBase64Url, "encodeBase64Url");
 
 // src/runtime/room.ts
 import { DurableObject as DurableObject2 } from "cloudflare:workers";
@@ -1354,6 +1379,7 @@ async function workerFetch(request, env) {
       const result = await directoryStub(env).fetch(asInternalRequest("/create", {
         requestId: requestId(body.requestId),
         handicap: body.handicap,
+        handicapTarget: body.handicapTarget,
         handicapSide: body.handicapSide,
         order: body.order,
         appUrl: env.APP_URL
