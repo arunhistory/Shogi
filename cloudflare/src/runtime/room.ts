@@ -1,14 +1,20 @@
 import { DurableObject } from 'cloudflare:workers';
-import { initialPosition } from '../../../src/game/engine';
-import type { Move } from '../../../src/game/types';
+import { configuredInitialPosition } from '../../../src/game/setup';
+import type { Move, Side } from '../../../src/game/types';
 import {
   type Env,
   type SocketAttachment,
   type StoredRoomState,
   errorJson,
   moveFingerprint,
+  normalizeCreatorSide,
+  normalizeHandicapSide,
+  normalizeOrder,
+  oppositeSide,
   parseHandicap,
   parseMove,
+  parseOrder,
+  parseSide,
   randomToken,
   readJson,
   requestIdPattern,
@@ -73,14 +79,11 @@ export class ShogiRoom extends DurableObject<Env>{
       :(state.players.gote&&safeEqual(tokenHash,state.players.gote))?'gote':null;
     if(!seat)return errorJson('PLAYER_AUTH_REJECTED',403);
 
-    // Only a credential that already owns a seat can consume a live WebSocket slot.
     if(this.ctx.getWebSockets().length>=8)return errorJson('TOO_MANY_CONNECTIONS',429);
     const pair=new WebSocketPair();
     const client=pair[0];
     const server=pair[1];
     this.ctx.acceptWebSocket(server);
-    // The header already proved the seat identity. The existing authenticate message
-    // remains as a second equality check before this socket receives game state.
     server.serializeAttachment({connectionId:randomToken(12),authenticated:false,seat} satisfies SocketAttachment);
     return new Response(null,{
       status:101,
@@ -96,24 +99,33 @@ export class ShogiRoom extends DurableObject<Env>{
     const creationRequestId=typeof body.creationRequestId==='string'?body.creationRequestId:'';
     if(!/^[A-Za-z0-9_-]{16,128}$/.test(roomId)||!/^[a-f0-9]{64}$/.test(creatorTokenHash)||!requestIdPattern.test(creationRequestId))return errorJson('INVALID_ROOM_INIT',400);
     const handicap=parseHandicap(body.handicap);
+    const handicapSide=body.handicapSide===undefined?'gote':parseSide(body.handicapSide);
+    const order=body.order===undefined?'sente':parseOrder(body.order);
+    const creatorSide=body.creatorSide===undefined?'sente':parseSide(body.creatorSide);
     const existing=await this.ctx.storage.get<StoredRoomState>('state');
     if(existing){
+      const existingCreator=normalizeCreatorSide(existing);
+      const existingHash=existing.players[existingCreator];
       if(
-        existing.roomId===roomId&&
-        existing.handicap===handicap&&
-        existing.creationRequestId===creationRequestId&&
-        !!existing.players.sente&&safeEqual(existing.players.sente,creatorTokenHash)
+        existing.roomId===roomId&&existing.handicap===handicap&&normalizeHandicapSide(existing)===handicapSide&&
+        normalizeOrder(existing)===order&&existingCreator===creatorSide&&existing.creationRequestId===creationRequestId&&
+        !!existingHash&&safeEqual(existingHash,creatorTokenHash)
       )return responseJson({ok:true,revision:existing.revision});
       return errorJson('ROOM_ALREADY_INITIALIZED',409);
     }
+    const players:{sente:string|null;gote:string|null}={sente:null,gote:null};
+    players[creatorSide]=creatorTokenHash;
     const state:StoredRoomState={
       roomId,
       handicap,
+      handicapSide,
+      order,
+      creatorSide,
       creationRequestId,
       revision:0,
       status:'waiting',
-      position:initialPosition(handicap),
-      players:{sente:creatorTokenHash,gote:null},
+      position:configuredInitialPosition(handicap,handicapSide),
+      players,
       processed:{sente:{},gote:{}},
     };
     await this.ctx.storage.put('state',state);
@@ -127,21 +139,42 @@ export class ShogiRoom extends DurableObject<Env>{
     if(!/^[a-f0-9]{64}$/.test(tokenHash)||!joinRequestPattern.test(joinRequestId))return errorJson('INVALID_PLAYER_TOKEN',400);
     const state=await this.ctx.storage.get<StoredRoomState>('state');
     if(!state)return errorJson('ROOM_NOT_FOUND',404);
-    if(state.players.gote){
-      if(state.goteJoinRequestId===joinRequestId&&safeEqual(state.players.gote,tokenHash))return responseJson({ok:true,revision:state.revision});
-      return errorJson('ROOM_FULL',409);
+
+    const existingSeat:Side|null=(state.players.sente&&safeEqual(state.players.sente,tokenHash))?'sente'
+      :(state.players.gote&&safeEqual(state.players.gote,tokenHash))?'gote':null;
+    if(existingSeat){
+      const sameRequest=state.joinRequestId===joinRequestId||(existingSeat==='gote'&&state.goteJoinRequestId===joinRequestId);
+      if(sameRequest)return this.joinResponse(state,existingSeat);
+      return errorJson('PLAYER_ALREADY_ASSIGNED',409);
     }
+
+    if(state.players.sente&&state.players.gote)return errorJson('ROOM_FULL',409);
     if(state.status!=='waiting')return errorJson('ROOM_NOT_JOINABLE',409);
+    const seat:Side=state.players.sente?'gote':'sente';
+    const nextPlayers={...state.players,[seat]:tokenHash};
     const next:StoredRoomState={
       ...state,
-      players:{...state.players,gote:tokenHash},
-      goteJoinRequestId:joinRequestId,
+      players:nextPlayers,
+      joinRequestId,
+      ...(seat==='gote'?{goteJoinRequestId:joinRequestId}:{}),
       status:'playing',
+      startedAt:Date.now(),
       revision:state.revision+1,
     };
     await this.ctx.storage.put('state',next);
     this.broadcastState(next);
-    return responseJson({ok:true,revision:next.revision});
+    return this.joinResponse(next,seat);
+  }
+
+  private joinResponse(state:StoredRoomState,seat:Side):Response{
+    return responseJson({
+      ok:true,
+      revision:state.revision,
+      seat,
+      handicap:state.handicap,
+      handicapSide:normalizeHandicapSide(state),
+      order:normalizeOrder(state),
+    });
   }
 
   private async handleSocketMessage(socket:WebSocket,message:string|ArrayBuffer):Promise<void>{
@@ -173,14 +206,19 @@ export class ShogiRoom extends DurableObject<Env>{
     }
 
     if(data.type==='sync'){this.sendState(socket,state);return;}
-    if(data.type!=='move'){this.send(socket,{type:'error',code:'UNKNOWN_MESSAGE'});return;}
+    if(data.type!=='move'&&data.type!=='resign'){this.send(socket,{type:'error',code:'UNKNOWN_MESSAGE'});return;}
 
     const seat=attachment.seat;
     const id=typeof data.requestId==='string'?data.requestId:'';
     if(!requestIdPattern.test(id)){this.reject(socket,id,'INVALID_REQUEST_ID',state.revision);return;}
-    let move:Move;
-    try{move=parseMove(data.move);}catch{this.reject(socket,id,'INVALID_MOVE',state.revision);return;}
-    const fingerprint=moveFingerprint(move);
+
+    let fingerprint:string;
+    let move:Move|null=null;
+    if(data.type==='move'){
+      try{move=parseMove(data.move);}catch{this.reject(socket,id,'INVALID_MOVE',state.revision);return;}
+      fingerprint=moveFingerprint(move);
+    }else fingerprint='resign';
+
     const prior=state.processed[seat][id];
     if(prior!==undefined){
       if(prior===fingerprint)this.sendState(socket,state);
@@ -189,18 +227,34 @@ export class ShogiRoom extends DurableObject<Env>{
     }
 
     if(state.status!=='playing'){this.reject(socket,id,'GAME_NOT_PLAYING',state.revision);return;}
-    if(state.position.turn!==seat){this.reject(socket,id,'NOT_YOUR_TURN',state.revision);return;}
     const expectedRevision=Number(data.expectedRevision);
     if(!Number.isSafeInteger(expectedRevision)||expectedRevision!==state.revision){this.reject(socket,id,'STALE_REVISION',state.revision);return;}
 
-    const validated=validateMoveWithWasm(state.position,move);
+    const processed={...state.processed[seat],[id]:fingerprint};
+    if(data.type==='resign'){
+      const next:StoredRoomState={
+        ...state,
+        status:'ended',
+        winner:oppositeSide(seat),
+        resultReason:'resignation',
+        endedAt:Date.now(),
+        revision:state.revision+1,
+        processed:{...state.processed,[seat]:processed},
+      };
+      await this.ctx.storage.put('state',next);
+      this.broadcastState(next);
+      return;
+    }
+
+    if(state.position.turn!==seat){this.reject(socket,id,'NOT_YOUR_TURN',state.revision);return;}
+    const validated=validateMoveWithWasm(state.position,move!);
     if(!validated.ok){this.reject(socket,id,validated.code,state.revision);return;}
     const {position,outcome}=validated;
-    const processed={...state.processed[seat],[id]:fingerprint};
     const terminal=outcome.ended?{
       status:'ended' as const,
       ...('winner' in outcome?{winner:outcome.winner}:{}),
       resultReason:outcome.reason,
+      endedAt:Date.now(),
     }:{status:'playing' as const};
     const next:StoredRoomState={
       ...state,
@@ -225,10 +279,6 @@ export class ShogiRoom extends DurableObject<Env>{
       const attachment=socket.deserializeAttachment() as SocketAttachment|undefined;
       if(attachment?.authenticated&&attachment.seat)connections[attachment.seat]++;
     }
-    // Full move history remains authoritative and persisted only inside the room state.
-    // A client needs the current board/hands/turn plus one canonical key proving that
-    // current position; sending every prior internal entry would grow every WebSocket
-    // broadcast for no gameplay benefit and would blur internal history with user kifu.
     const clientPosition={...state.position,history:state.position.history.slice(-1)};
     return{
       roomId:state.roomId,
@@ -236,6 +286,11 @@ export class ShogiRoom extends DurableObject<Env>{
       position:clientPosition,
       status:state.status,
       connections,
+      handicap:state.handicap,
+      handicapSide:normalizeHandicapSide(state),
+      order:normalizeOrder(state),
+      ...(state.startedAt?{startedAt:state.startedAt}:{}),
+      ...(state.endedAt?{endedAt:state.endedAt}:{}),
       ...(state.winner?{winner:state.winner}:{}),
       ...(state.resultReason?{resultReason:state.resultReason}:{}),
     };
