@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initialPosition } from '../src/game/engine';
+import { applyMove, initialPosition } from '../src/game/engine';
 import { parseAuthoritativeState } from '../src/online/client';
 
 const roomId='room_test_12345678';
@@ -21,6 +21,21 @@ describe('authoritative client state validation',()=>{
     const parsed=parseAuthoritativeState(playingState(),roomId);
     expect(parsed).not.toBeNull();
     expect(parsed?.connections).toEqual({sente:5,gote:3});
+  });
+
+  it('accepts a current-position-only history snapshot for long online games',()=>{
+    const moved=applyMove(initialPosition(),{from:[6,4],to:[5,4]});
+    const state={...playingState(),revision:8,position:{...moved,history:moved.history.slice(-1)}};
+    const parsed=parseAuthoritativeState(state,roomId);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.position.ply).toBe(1);
+    expect(parsed?.position.history).toHaveLength(1);
+  });
+
+  it('keeps accepting the legacy full authoritative history during transition',()=>{
+    const moved=applyMove(initialPosition(),{from:[6,4],to:[5,4]});
+    const state={...playingState(),revision:8,position:moved};
+    expect(parseAuthoritativeState(state,roomId)).not.toBeNull();
   });
 
   it('rejects connection counts beyond the authoritative room ceiling',()=>{
