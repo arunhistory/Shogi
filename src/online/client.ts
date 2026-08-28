@@ -1,6 +1,6 @@
 import { positionKey } from '../game/engine';
 import { isHandicap } from '../game/handicaps';
-import { isOrderPreference, isSide } from '../game/setup';
+import { handicapPairFromLegacy, isOrderPreference, isSide } from '../game/setup';
 import type { OrderPreference } from '../game/setup';
 import type { Handicap, Move, Position, Side } from '../game/types';
 
@@ -10,8 +10,8 @@ export interface OnlineRoomEntry {
   passcode:string;
   seat:Side;
   revision:number;
-  handicap:Handicap;
-  handicapSide:Side;
+  senteHandicap:Handicap;
+  goteHandicap:Handicap;
   order:OrderPreference;
 }
 
@@ -23,8 +23,8 @@ export interface AuthoritativeState {
   position:Position;
   status:'waiting'|'playing'|'ended';
   connections:{sente:number;gote:number};
-  handicap:Handicap;
-  handicapSide:Side;
+  senteHandicap:Handicap;
+  goteHandicap:Handicap;
   order:OrderPreference;
   startedAt?:number;
   endedAt?:number;
@@ -68,6 +68,19 @@ function assertString(value:unknown,name:string,maxLength=512):string{
   return value;
 }
 
+function parseHandicapPair(data:Record<string,unknown>):{senteHandicap:Handicap;goteHandicap:Handicap}|null{
+  const hasSente=data.senteHandicap!==undefined;
+  const hasGote=data.goteHandicap!==undefined;
+  if(hasSente||hasGote){
+    if(!isHandicap(data.senteHandicap)||!isHandicap(data.goteHandicap))return null;
+    return{senteHandicap:data.senteHandicap,goteHandicap:data.goteHandicap};
+  }
+  const handicap=isHandicap(data.handicap)?data.handicap:'even';
+  const handicapSide=isSide(data.handicapSide)?data.handicapSide:'gote';
+  const pair=handicapPairFromLegacy(handicap,handicapSide);
+  return{senteHandicap:pair.sente,goteHandicap:pair.gote};
+}
+
 function parseHandshake(value:unknown):RoomHandshakeResponse{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('INVALID_ROOM_RESPONSE');
   const data=value as Record<string,unknown>;
@@ -85,8 +98,8 @@ function parseHandshake(value:unknown):RoomHandshakeResponse{
   const parsedInvite=new URL(inviteUrl,location.href);
   if(parsedInvite.protocol!=='https:'&&parsedInvite.protocol!=='http:')throw new Error('INVALID_INVITE_URL');
   if(parsedInvite.origin!==location.origin)throw new Error('INVALID_INVITE_ORIGIN');
-  const handicap=isHandicap(data.handicap)?data.handicap:'even';
-  const handicapSide=isSide(data.handicapSide)?data.handicapSide:'gote';
+  const handicaps=parseHandicapPair(data);
+  if(!handicaps)throw new Error('INVALID_HANDICAPS');
   const order=isOrderPreference(data.order)?data.order:'sente';
   return{
     roomId,
@@ -95,8 +108,7 @@ function parseHandshake(value:unknown):RoomHandshakeResponse{
     playerToken,
     seat,
     revision,
-    handicap,
-    handicapSide,
+    ...handicaps,
     order,
   };
 }
@@ -123,8 +135,8 @@ function publicEntry(handshake:RoomHandshakeResponse):OnlineRoomEntry{
     passcode:handshake.passcode,
     seat:handshake.seat,
     revision:handshake.revision,
-    handicap:handshake.handicap,
-    handicapSide:handshake.handicapSide,
+    senteHandicap:handshake.senteHandicap,
+    goteHandicap:handshake.goteHandicap,
     order:handshake.order,
   };
 }
@@ -174,15 +186,15 @@ function readRememberedRoom(roomId:string):OnlineRoomEntry|null{
   const raw=sessionStorage.getItem(roomInfoKey(roomId));
   if(!raw)return null;
   try{
-    const value=JSON.parse(raw) as Partial<OnlineRoomEntry>;
+    const value=JSON.parse(raw) as Record<string,unknown>;
     if(value.roomId!==roomId||!roomIdPattern.test(roomId)||typeof value.inviteUrl!=='string'||typeof value.passcode!=='string')return null;
     if(value.seat!=='sente'&&value.seat!=='gote')return null;
     if(!Number.isSafeInteger(value.revision)||Number(value.revision)<0)return null;
     if(!passcodePattern.test(value.passcode.trim().toUpperCase()))return null;
-    const handicap=isHandicap(value.handicap)?value.handicap:'even';
-    const handicapSide=isSide(value.handicapSide)?value.handicapSide:'gote';
+    const handicaps=parseHandicapPair(value);
+    if(!handicaps)return null;
     const order=isOrderPreference(value.order)?value.order:'sente';
-    return{roomId,inviteUrl:value.inviteUrl,passcode:value.passcode,seat:value.seat,revision:Number(value.revision),handicap,handicapSide,order};
+    return{roomId,inviteUrl:value.inviteUrl,passcode:value.passcode,seat:value.seat,revision:Number(value.revision),...handicaps,order};
   }catch{return null;}
 }
 
@@ -195,11 +207,11 @@ export function clearActiveOnlineRoom():void{
   sessionStorage.removeItem(activeRoomKey);
 }
 
-export async function createOnlineRoom(base:string,handicap:Handicap,handicapSide:Side='gote',order:OrderPreference='random'):Promise<OnlineRoomEntry>{
-  if(!isSide(handicapSide)||!isOrderPreference(order))throw new Error('INVALID_MATCH_RULES');
-  const op=`create:${handicap}:${handicapSide}:${order}`;
+export async function createOnlineRoom(base:string,senteHandicap:Handicap,goteHandicap:Handicap,order:OrderPreference='random'):Promise<OnlineRoomEntry>{
+  if(!isHandicap(senteHandicap)||!isHandicap(goteHandicap)||!isOrderPreference(order))throw new Error('INVALID_MATCH_RULES');
+  const op=`create:${senteHandicap}:${goteHandicap}:${order}`;
   const requestId=operationRequestId(op);
-  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap,handicapSide,order}));
+  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,senteHandicap,goteHandicap,order}));
   rememberPlayer(handshake);
   completeOperation(op);
   return publicEntry(handshake);
@@ -390,8 +402,8 @@ export function parseAuthoritativeState(value:unknown,expectedRoomId:string):Aut
       if(winner!==undefined)return null;
     }else if(winner!=='sente'&&winner!=='gote')return null;
   }else if(winner!==undefined||resultReason!==undefined)return null;
-  const handicap=isHandicap(data.handicap)?data.handicap:'even';
-  const handicapSide=isSide(data.handicapSide)?data.handicapSide:'gote';
+  const handicaps=parseHandicapPair(data);
+  if(!handicaps)return null;
   const order=isOrderPreference(data.order)?data.order:'sente';
   const startedAt=parseTimestamp(data.startedAt);
   const endedAt=parseTimestamp(data.endedAt);
@@ -404,8 +416,7 @@ export function parseAuthoritativeState(value:unknown,expectedRoomId:string):Aut
     position:data.position,
     status:data.status,
     connections,
-    handicap,
-    handicapSide,
+    ...handicaps,
     order,
     ...(startedAt!==undefined?{startedAt}:{}),
     ...(endedAt!==undefined?{endedAt}:{}),
