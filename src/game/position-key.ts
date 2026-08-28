@@ -69,7 +69,10 @@ export function decodePositionKey(key:string):PositionKeyData{
   if(key.startsWith(`${version}|`)){
     const parts=key.split('|');
     if(parts.length!==5)throw new Error('INVALID_HISTORY_KEY');
-    const [,turnCode,boardCode,senteHands,goteHands]=parts;
+    const turnCode=parts[1]!;
+    const boardCode=parts[2]!;
+    const senteHands=parts[3]!;
+    const goteHands=parts[4]!;
     if((turnCode!=='S'&&turnCode!=='G')||boardCode.length!==81)throw new Error('INVALID_HISTORY_KEY');
     const board:Board=Array.from({length:9},(_,row)=>Array.from({length:9},(_,column)=>decodeSquare(boardCode[row*9+column]!)));
     const hands=emptyHands();
