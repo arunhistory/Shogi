@@ -42,23 +42,30 @@ export class AudioController {
   private manifest:AudioManifest={version:1,bgm:[],se:[]};
   private bgm:HTMLAudioElement|null=null;
   private initialized=false;
+  private bgmGestureArmed=false;
 
   getPreferences():AudioPreferences{return{...this.preferences};}
 
   async initialize():Promise<void>{
-    if(this.initialized)return;
+    if(this.initialized){
+      this.armBgmGesture();
+      return;
+    }
     this.initialized=true;
     try{
       const response=await fetch(new URL('assets/manifest.json',document.baseURI),{cache:'no-cache',credentials:'same-origin'});
-      if(!response.ok)return;
-      const value=await response.json() as Partial<AudioManifest>;
-      if(value.version!==1||!Array.isArray(value.bgm)||!Array.isArray(value.se))return;
-      this.manifest={
-        version:1,
-        bgm:value.bgm.filter(item=>item&&typeof item.id==='string'&&typeof item.url==='string'),
-        se:value.se.filter(item=>item&&typeof item.id==='string'&&typeof item.url==='string'),
-      };
+      if(response.ok){
+        const value=await response.json() as Partial<AudioManifest>;
+        if(value.version===1&&Array.isArray(value.bgm)&&Array.isArray(value.se)){
+          this.manifest={
+            version:1,
+            bgm:value.bgm.filter(item=>item&&typeof item.id==='string'&&typeof item.url==='string'),
+            se:value.se.filter(item=>item&&typeof item.id==='string'&&typeof item.url==='string'),
+          };
+        }
+      }
     }catch{/* Assets are optional by design. */}
+    this.armBgmGesture();
   }
 
   async updatePreferences(next:Partial<AudioPreferences>):Promise<void>{
@@ -72,9 +79,11 @@ export class AudioController {
     if(this.bgm)this.bgm.volume=this.preferences.bgmVolume;
     if(!this.preferences.bgmEnabled){
       this.bgm?.pause();
+      this.disarmBgmGesture();
       return;
     }
     await this.startBgm();
+    if(!this.bgm||this.bgm.paused)this.armBgmGesture();
   }
 
   async startBgm(id?:string):Promise<void>{
@@ -91,7 +100,10 @@ export class AudioController {
       this.bgm.loop=entry.loop!==false;
     }
     this.bgm.volume=this.preferences.bgmVolume;
-    try{await this.bgm.play();}catch{/* Autoplay may be blocked; no game error. */}
+    try{
+      await this.bgm.play();
+      this.disarmBgmGesture();
+    }catch{/* Autoplay may be blocked; the next user gesture may retry. */}
   }
 
   async playSe(id:string):Promise<void>{
@@ -105,6 +117,29 @@ export class AudioController {
     audio.volume=this.preferences.seVolume;
     try{await audio.play();}catch{/* Optional sound never blocks gameplay. */}
   }
+
+  private armBgmGesture():void{
+    if(this.bgmGestureArmed||!this.preferences.bgmEnabled||this.manifest.bgm.length===0)return;
+    this.bgmGestureArmed=true;
+    document.addEventListener('pointerdown',this.handleBgmGesture,{once:true,capture:true});
+    document.addEventListener('keydown',this.handleBgmGesture,{once:true,capture:true});
+  }
+
+  private disarmBgmGesture():void{
+    if(!this.bgmGestureArmed)return;
+    this.bgmGestureArmed=false;
+    document.removeEventListener('pointerdown',this.handleBgmGesture,true);
+    document.removeEventListener('keydown',this.handleBgmGesture,true);
+  }
+
+  private handleBgmGesture=():void=>{
+    this.bgmGestureArmed=false;
+    document.removeEventListener('pointerdown',this.handleBgmGesture,true);
+    document.removeEventListener('keydown',this.handleBgmGesture,true);
+    void this.startBgm().then(()=>{
+      if(!this.bgm||this.bgm.paused)this.armBgmGesture();
+    });
+  };
 }
 
 export const audioController=new AudioController();
