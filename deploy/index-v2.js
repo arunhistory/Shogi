@@ -298,6 +298,7 @@ function gameOutcome(pos) {
 __name(gameOutcome, "gameOutcome");
 
 // ../src/game/setup.ts
+var EVEN_HANDICAPS = Object.freeze({ sente: "even", gote: "even" });
 function isOrderPreference(value) {
   return value === "random" || value === "sente" || value === "gote";
 }
@@ -306,23 +307,24 @@ function isSide(value) {
   return value === "sente" || value === "gote";
 }
 __name(isSide, "isSide");
-function isHandicapTarget(value) {
-  return value === "self" || value === "opponent";
+function handicapPairFromLegacy(handicap = "even", handicapSide = "gote") {
+  return handicapSide === "sente" ? { sente: handicap, gote: "even" } : { sente: "even", gote: handicap };
 }
-__name(isHandicapTarget, "isHandicapTarget");
-function configuredInitialPosition(handicap = "even", handicapSide = "gote") {
+__name(handicapPairFromLegacy, "handicapPairFromLegacy");
+function configuredInitialPosition(handicapsOrLegacy = EVEN_HANDICAPS, legacySide = "gote") {
+  const handicaps2 = typeof handicapsOrLegacy === "string" ? handicapPairFromLegacy(handicapsOrLegacy, legacySide) : handicapsOrLegacy;
   const position = initialPosition("even");
-  if (handicap !== "even") {
-    const remove = /* @__PURE__ */ __name((kind) => {
-      for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
-        const piece = position.board[y][x];
-        if (piece?.side === handicapSide && piece.kind === kind) {
-          position.board[y][x] = null;
-          return;
-        }
+  const remove = /* @__PURE__ */ __name((side, kind) => {
+    for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
+      const piece = position.board[y][x];
+      if (piece?.side === side && piece.kind === kind) {
+        position.board[y][x] = null;
+        return;
       }
-    }, "remove");
-    for (const kind of handicapRule(handicap).removedFromGote) remove(kind);
+    }
+  }, "remove");
+  for (const side of ["sente", "gote"]) {
+    for (const kind of handicapRule(handicaps2[side]).removedFromGote) remove(side, kind);
   }
   position.turn = "sente";
   position.ply = 0;
@@ -423,11 +425,6 @@ function parseHandicap(value) {
   return value;
 }
 __name(parseHandicap, "parseHandicap");
-function parseHandicapTarget(value) {
-  if (!isHandicapTarget(value)) throw new Error("INVALID_HANDICAP_TARGET");
-  return value;
-}
-__name(parseHandicapTarget, "parseHandicapTarget");
 function parseSide(value) {
   if (!isSide(value)) throw new Error("INVALID_SIDE");
   return value;
@@ -438,10 +435,19 @@ function parseOrder(value) {
   return value;
 }
 __name(parseOrder, "parseOrder");
-function normalizeHandicapSide(state) {
-  return isSide(state.handicapSide) ? state.handicapSide : "gote";
+function normalizeHandicaps(value) {
+  if (isHandicap(value.senteHandicap) && isHandicap(value.goteHandicap)) return { sente: value.senteHandicap, gote: value.goteHandicap };
+  const handicap = isHandicap(value.handicap) ? value.handicap : "even";
+  const side = isSide(value.handicapSide) ? value.handicapSide : "gote";
+  return handicapPairFromLegacy(handicap, side);
 }
-__name(normalizeHandicapSide, "normalizeHandicapSide");
+__name(normalizeHandicaps, "normalizeHandicaps");
+function legacyHandicapProjection(handicapsValue) {
+  if (handicapsValue.gote !== "even") return { handicap: handicapsValue.gote, handicapSide: "gote" };
+  if (handicapsValue.sente !== "even") return { handicap: handicapsValue.sente, handicapSide: "sente" };
+  return { handicap: "even", handicapSide: "gote" };
+}
+__name(legacyHandicapProjection, "legacyHandicapProjection");
 function normalizeOrder(state) {
   return isOrderPreference(state.order) ? state.order : "sente";
 }
@@ -544,22 +550,33 @@ __name(websocketPlayerToken, "websocketPlayerToken");
 import { DurableObject } from "cloudflare:workers";
 function normalizeCreateOperation(operation) {
   const stored = operation;
-  const creatorSide = isSide(stored.creatorSide) ? stored.creatorSide : "sente";
-  const handicapSide = isSide(stored.handicapSide) ? stored.handicapSide : "gote";
-  const handicapTarget = isHandicapTarget(stored.handicapTarget) ? stored.handicapTarget : handicapSide === creatorSide ? "self" : "opponent";
+  const handicapsValue = normalizeHandicaps(operation);
+  const legacy = legacyHandicapProjection(handicapsValue);
   return {
     ...operation,
-    handicapTarget,
-    handicapSide,
+    senteHandicap: handicapsValue.sente,
+    goteHandicap: handicapsValue.gote,
+    handicap: legacy.handicap,
+    handicapSide: legacy.handicapSide,
     order: isOrderPreference(stored.order) ? stored.order : "sente",
-    creatorSide
+    creatorSide: isSide(stored.creatorSide) ? stored.creatorSide : "sente"
   };
 }
 __name(normalizeCreateOperation, "normalizeCreateOperation");
-function resolvedHandicapSide(target, creatorSide) {
-  return target === "self" ? creatorSide : oppositeSide(creatorSide);
+function parseRequestedHandicaps(body) {
+  const hasSente = body.senteHandicap !== void 0;
+  const hasGote = body.goteHandicap !== void 0;
+  if (hasSente || hasGote) {
+    if (!hasSente || !hasGote) throw new Error("INCOMPLETE_HANDICAP_PAIR");
+    if (body.handicap !== void 0 || body.handicapSide !== void 0 || body.handicapTarget !== void 0) throw new Error("AMBIGUOUS_HANDICAP_RULES");
+    return { sente: parseHandicap(body.senteHandicap), gote: parseHandicap(body.goteHandicap) };
+  }
+  if (body.handicapTarget !== void 0) throw new Error("HANDICAP_TARGET_OBSOLETE");
+  const handicap = body.handicap === void 0 ? "even" : parseHandicap(body.handicap);
+  const side = body.handicapSide === void 0 ? "gote" : parseSide(body.handicapSide);
+  return side === "sente" ? { sente: handicap, gote: "even" } : { sente: "even", gote: handicap };
 }
-__name(resolvedHandicapSide, "resolvedHandicapSide");
+__name(parseRequestedHandicaps, "parseRequestedHandicaps");
 var ShogiDirectory = class extends DurableObject {
   static {
     __name(this, "ShogiDirectory");
@@ -644,34 +661,28 @@ var ShogiDirectory = class extends DurableObject {
   }
   async create(body, ip) {
     const id = requestId(body.requestId);
-    const handicap = parseHandicap(body.handicap);
-    const requestedTarget = body.handicapTarget === void 0 ? null : parseHandicapTarget(body.handicapTarget);
-    const legacyHandicapSide = body.handicapSide === void 0 ? null : parseSide(body.handicapSide);
-    if (requestedTarget && legacyHandicapSide) return errorJson("AMBIGUOUS_HANDICAP_TARGET", 400);
+    const handicapsValue = parseRequestedHandicaps(body);
     const order = body.order === void 0 ? "sente" : parseOrder(body.order);
     const appUrl = validateAppUrl(body.appUrl);
     const opKey = `create:${id}`;
     const stored = await this.ctx.storage.get(opKey);
     if (stored) {
       const existing = normalizeCreateOperation(stored);
-      const effectiveLegacySide = legacyHandicapSide ?? "gote";
-      const target = requestedTarget ?? (effectiveLegacySide === existing.creatorSide ? "self" : "opponent");
-      const legacySideMatches = requestedTarget !== null || existing.handicapSide === effectiveLegacySide;
-      if (existing.kind !== "create" || existing.requestId !== id || existing.handicap !== handicap || existing.handicapTarget !== target || !legacySideMatches || existing.order !== order || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
+      if (existing.kind !== "create" || existing.requestId !== id || existing.senteHandicap !== handicapsValue.sente || existing.goteHandicap !== handicapsValue.gote || existing.order !== order || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
       return await this.resumeCreate(opKey, existing);
     }
     await this.enforceRateLimit(ip, "create");
     const passcode = await this.allocatePasscode(opKey);
     const creatorSide = order === "random" ? randomSide() : order;
-    const handicapSide = legacyHandicapSide ?? resolvedHandicapSide(requestedTarget ?? "opponent", creatorSide);
-    const handicapTarget = requestedTarget ?? (handicapSide === creatorSide ? "self" : "opponent");
+    const legacy = legacyHandicapProjection(handicapsValue);
     const operation = {
       kind: "create",
       phase: "pending",
       requestId: id,
-      handicap,
-      handicapTarget,
-      handicapSide,
+      senteHandicap: handicapsValue.sente,
+      goteHandicap: handicapsValue.gote,
+      handicap: legacy.handicap,
+      handicapSide: legacy.handicapSide,
       order,
       creatorSide,
       appUrl,
@@ -693,6 +704,8 @@ var ShogiDirectory = class extends DurableObject {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         roomId: operation.roomId,
+        senteHandicap: operation.senteHandicap,
+        goteHandicap: operation.goteHandicap,
         handicap: operation.handicap,
         handicapSide: operation.handicapSide,
         order: operation.order,
@@ -719,6 +732,8 @@ var ShogiDirectory = class extends DurableObject {
       playerToken,
       seat: operation.creatorSide,
       revision: room.revision,
+      senteHandicap: operation.senteHandicap,
+      goteHandicap: operation.goteHandicap,
       handicap: operation.handicap,
       handicapSide: operation.handicapSide,
       order: operation.order
@@ -779,6 +794,8 @@ var ShogiDirectory = class extends DurableObject {
       playerToken,
       seat: room.seat,
       revision: room.revision,
+      senteHandicap: room.senteHandicap,
+      goteHandicap: room.goteHandicap,
       handicap: room.handicap,
       handicapSide: room.handicapSide,
       order: room.order
@@ -971,6 +988,18 @@ __name(validateMoveWithWasm, "validateMoveWithWasm");
 
 // src/runtime/room.ts
 var joinRequestPattern = /^(passcode|invite):[A-Za-z0-9_-]{8,128}$/;
+function parseInitHandicaps(body) {
+  const hasSente = body.senteHandicap !== void 0;
+  const hasGote = body.goteHandicap !== void 0;
+  if (hasSente || hasGote) {
+    if (!hasSente || !hasGote) throw new Error("INCOMPLETE_HANDICAP_PAIR");
+    return { sente: parseHandicap(body.senteHandicap), gote: parseHandicap(body.goteHandicap) };
+  }
+  const handicap = body.handicap === void 0 ? "even" : parseHandicap(body.handicap);
+  const side = body.handicapSide === void 0 ? "gote" : parseSide(body.handicapSide);
+  return side === "sente" ? { sente: handicap, gote: "even" } : { sente: "even", gote: handicap };
+}
+__name(parseInitHandicaps, "parseInitHandicaps");
 var ShogiRoom = class extends DurableObject2 {
   static {
     __name(this, "ShogiRoom");
@@ -1040,29 +1069,32 @@ var ShogiRoom = class extends DurableObject2 {
     const creatorTokenHash = typeof body.creatorTokenHash === "string" ? body.creatorTokenHash : "";
     const creationRequestId = typeof body.creationRequestId === "string" ? body.creationRequestId : "";
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(roomId) || !/^[a-f0-9]{64}$/.test(creatorTokenHash) || !requestIdPattern.test(creationRequestId)) return errorJson("INVALID_ROOM_INIT", 400);
-    const handicap = parseHandicap(body.handicap);
-    const handicapSide = body.handicapSide === void 0 ? "gote" : parseSide(body.handicapSide);
+    const handicapsValue = parseInitHandicaps(body);
+    const legacy = legacyHandicapProjection(handicapsValue);
     const order = body.order === void 0 ? "sente" : parseOrder(body.order);
     const creatorSide = body.creatorSide === void 0 ? "sente" : parseSide(body.creatorSide);
     const existing = await this.ctx.storage.get("state");
     if (existing) {
       const existingCreator = normalizeCreatorSide(existing);
       const existingHash = existing.players[existingCreator];
-      if (existing.roomId === roomId && existing.handicap === handicap && normalizeHandicapSide(existing) === handicapSide && normalizeOrder(existing) === order && existingCreator === creatorSide && existing.creationRequestId === creationRequestId && !!existingHash && safeEqual(existingHash, creatorTokenHash)) return responseJson({ ok: true, revision: existing.revision });
+      const existingHandicaps = normalizeHandicaps(existing);
+      if (existing.roomId === roomId && existingHandicaps.sente === handicapsValue.sente && existingHandicaps.gote === handicapsValue.gote && normalizeOrder(existing) === order && existingCreator === creatorSide && existing.creationRequestId === creationRequestId && !!existingHash && safeEqual(existingHash, creatorTokenHash)) return responseJson({ ok: true, revision: existing.revision });
       return errorJson("ROOM_ALREADY_INITIALIZED", 409);
     }
     const players = { sente: null, gote: null };
     players[creatorSide] = creatorTokenHash;
     const state = {
       roomId,
-      handicap,
-      handicapSide,
+      senteHandicap: handicapsValue.sente,
+      goteHandicap: handicapsValue.gote,
+      handicap: legacy.handicap,
+      handicapSide: legacy.handicapSide,
       order,
       creatorSide,
       creationRequestId,
       revision: 0,
       status: "waiting",
-      position: configuredInitialPosition(handicap, handicapSide),
+      position: configuredInitialPosition(handicapsValue),
       players,
       processed: { sente: {}, gote: {} }
     };
@@ -1100,12 +1132,16 @@ var ShogiRoom = class extends DurableObject2 {
     return this.joinResponse(next, seat);
   }
   joinResponse(state, seat) {
+    const handicapsValue = normalizeHandicaps(state);
+    const legacy = legacyHandicapProjection(handicapsValue);
     return responseJson({
       ok: true,
       revision: state.revision,
       seat,
-      handicap: state.handicap,
-      handicapSide: normalizeHandicapSide(state),
+      senteHandicap: handicapsValue.sente,
+      goteHandicap: handicapsValue.gote,
+      handicap: legacy.handicap,
+      handicapSide: legacy.handicapSide,
       order: normalizeOrder(state)
     });
   }
@@ -1249,14 +1285,18 @@ var ShogiRoom = class extends DurableObject2 {
       if (attachment?.authenticated && attachment.seat) connections[attachment.seat]++;
     }
     const clientPosition = { ...state.position, history: state.position.history.slice(-1) };
+    const handicapsValue = normalizeHandicaps(state);
+    const legacy = legacyHandicapProjection(handicapsValue);
     return {
       roomId: state.roomId,
       revision: state.revision,
       position: clientPosition,
       status: state.status,
       connections,
-      handicap: state.handicap,
-      handicapSide: normalizeHandicapSide(state),
+      senteHandicap: handicapsValue.sente,
+      goteHandicap: handicapsValue.gote,
+      handicap: legacy.handicap,
+      handicapSide: legacy.handicapSide,
       order: normalizeOrder(state),
       ...state.startedAt ? { startedAt: state.startedAt } : {},
       ...state.endedAt ? { endedAt: state.endedAt } : {},
@@ -1378,8 +1418,9 @@ async function workerFetch(request, env) {
       const body = await readJson(request);
       const result = await directoryStub(env).fetch(asInternalRequest("/create", {
         requestId: requestId(body.requestId),
+        senteHandicap: body.senteHandicap,
+        goteHandicap: body.goteHandicap,
         handicap: body.handicap,
-        handicapTarget: body.handicapTarget,
         handicapSide: body.handicapSide,
         order: body.order,
         appUrl: env.APP_URL
