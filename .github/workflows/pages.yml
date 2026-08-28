@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Fetch verified build cache
+        run: git fetch origin build-output:refs/remotes/origin/build-output --depth=1 || true
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -55,6 +57,11 @@ jobs:
         env:
           VITE_SHOGI_API_URL: https://shogi-system.garigarimegane625.workers.dev
         run: npm run build
+      - name: Verify packaged BGM
+        run: |
+          test -s dist/assets/audio/maou_bgm_8bit26.ogg
+          test "$(stat -c '%s' dist/assets/audio/maou_bgm_8bit26.ogg)" -eq 6838254
+          echo '4d9eb71e46b77b58854360bc8d6c46eb5a98a90be0fcd4039dea8934e60d7cb2  dist/assets/audio/maou_bgm_8bit26.ogg' | sha256sum -c -
       - name: Browser smoke test
         run: npm run test:browser
       - uses: actions/upload-pages-artifact@v5
