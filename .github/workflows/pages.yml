@@ -27,9 +27,12 @@ jobs:
           sudo apt-get install -y emscripten
       - name: Build WebAssembly engine
         run: sh scripts/build-wasm.sh
-      - name: Install Cloudflare toolchain
+      - name: Install locked Cloudflare toolchain
         working-directory: cloudflare
-        run: npm install
+        run: npm ci
+      - name: Audit Cloudflare dependencies
+        working-directory: cloudflare
+        run: npm audit --audit-level=high
       - name: Verify Cloudflare Worker
         working-directory: cloudflare
         run: npm run check
@@ -43,7 +46,10 @@ jobs:
           test -s public/deploy/manifest.json
           test -s public/deploy/index-v2.js
           test "$(find public/deploy -maxdepth 1 -type f -name '*-shogi_engine.wasm' | wc -l)" -eq 1
-      - run: npm install
+      - name: Install locked application dependencies
+        run: npm ci
+      - name: Audit application dependencies
+        run: npm audit --audit-level=high
       - run: npm test
       - run: npm run build
       - name: Browser smoke test
