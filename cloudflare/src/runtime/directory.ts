@@ -7,7 +7,6 @@ import {
   errorJson,
   inviteUrl,
   jsonHeaders,
-  oppositeSide,
   parseHandicap,
   parseOrder,
   parseSide,
@@ -21,11 +20,22 @@ import {
   sha256,
   validateAppUrl,
 } from './common';
+import { isOrderPreference, isSide } from '../../../src/game/setup';
 
 function encodeBase64Url(bytes:Uint8Array):string{
   let binary='';
   for(const byte of bytes)binary+=String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+
+function normalizeCreateOperation(operation:CreateOperation):CreateOperation{
+  const stored=operation as CreateOperation&{handicapSide?:unknown;order?:unknown;creatorSide?:unknown};
+  return{
+    ...operation,
+    handicapSide:isSide(stored.handicapSide)?stored.handicapSide:'gote',
+    order:isOrderPreference(stored.order)?stored.order:'sente',
+    creatorSide:isSide(stored.creatorSide)?stored.creatorSide:'sente',
+  };
 }
 
 export class ShogiDirectory extends DurableObject<Env>{
@@ -112,8 +122,9 @@ export class ShogiDirectory extends DurableObject<Env>{
     const order=body.order===undefined?'sente':parseOrder(body.order);
     const appUrl=validateAppUrl(body.appUrl);
     const opKey=`create:${id}`;
-    const existing=await this.ctx.storage.get<CreateOperation>(opKey);
-    if(existing){
+    const stored=await this.ctx.storage.get<CreateOperation>(opKey);
+    if(stored){
+      const existing=normalizeCreateOperation(stored);
       if(
         existing.kind!=='create'||existing.requestId!==id||existing.handicap!==handicap||
         existing.handicapSide!==handicapSide||existing.order!==order||existing.appUrl!==appUrl
@@ -132,8 +143,13 @@ export class ShogiDirectory extends DurableObject<Env>{
     return await this.resumeCreate(opKey,operation);
   }
 
-  private async resumeCreate(opKey:string,operation:CreateOperation):Promise<Response>{
-    const playerToken=await this.derivePlayerToken(`creator:${operation.requestId}:${operation.roomId}`);
+  private async resumeCreate(opKey:string,rawOperation:CreateOperation):Promise<Response>{
+    const operation=normalizeCreateOperation(rawOperation);
+    const legacyIdentity=!(isSide((rawOperation as CreateOperation&{creatorSide?:unknown}).creatorSide));
+    const tokenScope=legacyIdentity
+      ?`sente:${operation.requestId}:${operation.roomId}`
+      :`creator:${operation.requestId}:${operation.roomId}`;
+    const playerToken=await this.derivePlayerToken(tokenScope);
     const creatorTokenHash=await sha256(playerToken);
     const init=await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request('https://internal/init',{
       method:'POST',
