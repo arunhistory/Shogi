@@ -3,12 +3,22 @@ import { CPU_PARALLEL_PROFILES, chooseCpuFallbackMove, chooseCpuMove, rankCpuMov
 import { applyMove, gameOutcome, legalMoves, positionKey } from './engine';
 import type { CpuLevel, Move, Position } from './types';
 
-interface CpuRequest {
+interface CpuWarmupRequest {
+  type:'warmup';
+  position:Position;
+  level:CpuLevel;
+  wasmUrl?:string;
+}
+
+interface CpuSearchRequest {
+  type?:'search';
   requestId:string;
   position:Position;
   level:CpuLevel;
   wasmUrl?:string;
 }
+
+type CpuWorkerRequest=CpuWarmupRequest|CpuSearchRequest;
 
 interface CpuResult {
   move:Move|null;
@@ -71,14 +81,35 @@ function median(values:number[]):number{
 
 class RootWorkerSlot {
   private worker:Worker;
-  constructor(private readonly position:Position,private readonly wasmUrl?:string){
+  private position:Position|null=null;
+  private wasmUrl:string|undefined;
+
+  constructor(wasmUrl?:string){
+    this.wasmUrl=wasmUrl;
     this.worker=this.spawn();
+    this.worker.postMessage({type:'warmup',wasmUrl:this.wasmUrl});
   }
 
   private spawn():Worker{
-    const worker=new Worker(new URL('./cpu-search-worker.ts',import.meta.url),{type:'module'});
-    worker.postMessage({type:'init',position:this.position,wasmUrl:this.wasmUrl});
-    return worker;
+    return new Worker(new URL('./cpu-search-worker.ts',import.meta.url),{type:'module'});
+  }
+
+  warmup(wasmUrl?:string){
+    this.wasmUrl=wasmUrl;
+    this.worker.postMessage({type:'warmup',wasmUrl:this.wasmUrl});
+  }
+
+  prepare(position:Position,wasmUrl?:string){
+    this.position=position;
+    this.wasmUrl=wasmUrl;
+    this.worker.postMessage({type:'init',position,wasmUrl});
+  }
+
+  private replace(){
+    this.worker.terminate();
+    this.worker=this.spawn();
+    this.worker.postMessage({type:'warmup',wasmUrl:this.wasmUrl});
+    if(this.position)this.worker.postMessage({type:'init',position:this.position,wasmUrl:this.wasmUrl});
   }
 
   async run(job:RootSearchJob,timeoutMs:number):Promise<RootJobResponse|null>{
@@ -91,10 +122,7 @@ class RootWorkerSlot {
         clearTimeout(timer);
         worker.onmessage=null;
         worker.onerror=null;
-        if(replace&&this.worker===worker){
-          worker.terminate();
-          this.worker=this.spawn();
-        }
+        if(replace&&this.worker===worker)this.replace();
         resolve(value);
       };
       const timer=setTimeout(()=>finish(null,true),Math.max(25,timeoutMs));
@@ -111,12 +139,25 @@ class RootWorkerSlot {
   terminate(){this.worker.terminate();}
 }
 
+const workerPool:RootWorkerSlot[]=[];
+
 function physicalWorkerCount(level:CpuLevel):number{
   const profile=CPU_PARALLEL_PROFILES[level];
   const reported=Number(navigator.hardwareConcurrency||4);
   const hardware=Number.isFinite(reported)&&reported>0?Math.trunc(reported):4;
   const computeSlots=Math.max(1,hardware-1);
   return Math.max(1,Math.min(profile.workerCap,computeSlots));
+}
+
+function ensureWorkerPool(level:CpuLevel,wasmUrl?:string,position?:Position):RootWorkerSlot[]{
+  const target=physicalWorkerCount(level);
+  while(workerPool.length<target)workerPool.push(new RootWorkerSlot(wasmUrl));
+  while(workerPool.length>target)workerPool.pop()!.terminate();
+  for(const slot of workerPool){
+    slot.warmup(wasmUrl);
+    if(position)slot.prepare(position,wasmUrl);
+  }
+  return workerPool;
 }
 
 async function runStage(
@@ -187,8 +228,7 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   }
 
   const deadline=Date.now()+profile.replyDeadlineMs;
-  const workerCount=physicalWorkerCount(level);
-  const slots=Array.from({length:workerCount},()=>new RootWorkerSlot(position,wasmUrl));
+  const slots=ensureWorkerPool(level,wasmUrl,position);
   let jobsIssued=0;
   let jobsCompleted=0;
   let nodesVisited=0;
@@ -196,44 +236,40 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   let wasmUsed=false;
   let stage=0;
 
-  try{
-    while(Date.now()<deadline-80&&jobsIssued<profile.logicalJobTarget&&survivors.length){
-      const depth=Math.min(profile.maxDepth,profile.baseDepth+stage);
-      const laneCount=Math.min(profile.lanes,1+stage);
-      const remainingJobs=profile.logicalJobTarget-jobsIssued;
-      const nodeLimit=Math.min(120_000,Math.trunc(profile.nodeBase*Math.pow(1.7,stage)));
-      const jobs:RootSearchJob[]=[];
-      outer:for(let lane=0;lane<laneCount;lane++){
-        for(const move of survivors){
-          jobs.push({jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,move,depth,nodeLimit,lane});
-          if(jobs.length>=remainingJobs)break outer;
-        }
+  while(Date.now()<deadline-80&&jobsIssued<profile.logicalJobTarget&&survivors.length){
+    const depth=Math.min(profile.maxDepth,profile.baseDepth+stage);
+    const laneCount=Math.min(profile.lanes,1+stage);
+    const remainingJobs=profile.logicalJobTarget-jobsIssued;
+    const nodeLimit=Math.min(120_000,Math.trunc(profile.nodeBase*Math.pow(1.7,stage)));
+    const jobs:RootSearchJob[]=[];
+    outer:for(let lane=0;lane<laneCount;lane++){
+      for(const move of survivors){
+        jobs.push({jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,move,depth,nodeLimit,lane});
+        if(jobs.length>=remainingJobs)break outer;
       }
-      if(!jobs.length)break;
-      jobsIssued+=jobs.length;
-      const completed=await runStage(slots,jobs,deadline);
-      jobsCompleted+=completed.length;
-      nodesVisited+=completed.reduce((sum,item)=>sum+(item.response.nodesVisited??0),0);
-      wasmUsed ||= completed.some(item=>item.response.wasmUsed);
-      const ranked=rankStageResults(survivors,completed);
-      if(ranked.length){
-        const validRanked=ranked.filter(item=>safeAgainstImmediatePerpetualLoss(position,item.move));
-        const chosen=validRanked.length?validRanked:ranked;
-        bestMove=chosen[0]!.move;
-        completedDepth=Math.max(completedDepth,chosen[0]!.depth);
-        const keep=Math.min(
-          chosen.length,
-          Math.max(1,Math.min(profile.minSurvivors,chosen.length),Math.ceil(chosen.length*profile.retention)),
-        );
-        survivors=chosen.slice(0,keep).map(item=>item.move);
-      }else if(Date.now()>=deadline-120){
-        break;
-      }
-      if(depth>=profile.maxDepth&&survivors.length===1)break;
-      stage++;
     }
-  }finally{
-    for(const slot of slots)slot.terminate();
+    if(!jobs.length)break;
+    jobsIssued+=jobs.length;
+    const completed=await runStage(slots,jobs,deadline);
+    jobsCompleted+=completed.length;
+    nodesVisited+=completed.reduce((sum,item)=>sum+(item.response.nodesVisited??0),0);
+    wasmUsed ||= completed.some(item=>item.response.wasmUsed);
+    const ranked=rankStageResults(survivors,completed);
+    if(ranked.length){
+      const validRanked=ranked.filter(item=>safeAgainstImmediatePerpetualLoss(position,item.move));
+      const chosen=validRanked.length?validRanked:ranked;
+      bestMove=chosen[0]!.move;
+      completedDepth=Math.max(completedDepth,chosen[0]!.depth);
+      const keep=Math.min(
+        chosen.length,
+        Math.max(1,Math.min(profile.minSurvivors,chosen.length),Math.ceil(chosen.length*profile.retention)),
+      );
+      survivors=chosen.slice(0,keep).map(item=>item.move);
+    }else if(Date.now()>=deadline-120){
+      break;
+    }
+    if(depth>=profile.maxDepth&&survivors.length===1)break;
+    stage++;
   }
 
   if(!usable.some(move=>sameCpuMove(move,bestMove)))bestMove=usable[0]!;
@@ -244,14 +280,20 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
       nodesVisited,
       logicalJobsPlanned:profile.logicalJobTarget,
       logicalJobsCompleted:jobsCompleted,
-      physicalWorkers:workerCount,
+      physicalWorkers:slots.length,
     },
     wasmUsed,
   };
 }
 
-self.onmessage=async(event:MessageEvent<CpuRequest>)=>{
-  const {requestId,position,level,wasmUrl}=event.data;
+self.onmessage=async(event:MessageEvent<CpuWorkerRequest>)=>{
+  const message=event.data;
+  if(message.type==='warmup'){
+    ensureWorkerPool(message.level,message.wasmUrl,message.position);
+    return;
+  }
+
+  const {requestId,position,level,wasmUrl}=message;
   const key=positionKey(position);
   try{
     const searched=await parallelSearch(position,level,wasmUrl);

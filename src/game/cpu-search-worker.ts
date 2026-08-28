@@ -5,6 +5,11 @@ import { loadWasmShogiEngine } from './wasm';
 import type { Move, Position, RepetitionStatus } from './types';
 import type { WasmShogiEngine } from './wasm';
 
+interface WarmupMessage {
+  type:'warmup';
+  wasmUrl?:string;
+}
+
 interface InitMessage {
   type:'init';
   position:Position;
@@ -20,7 +25,7 @@ interface SearchMessage {
   lane:number;
 }
 
-type RootWorkerMessage=InitMessage|SearchMessage;
+type RootWorkerMessage=WarmupMessage|InitMessage|SearchMessage;
 
 interface RootJobResponse {
   type:'result';
@@ -84,6 +89,11 @@ function assertRootParity(engine:WasmShogiEngine,position:Position):void{
 
 self.onmessage=async(event:MessageEvent<RootWorkerMessage>)=>{
   const message=event.data;
+  if(message.type==='warmup'){
+    rootWasmUrl=message.wasmUrl;
+    void engineFor(rootWasmUrl);
+    return;
+  }
   if(message.type==='init'){
     rootPosition=message.position;
     rootWasmUrl=message.wasmUrl;

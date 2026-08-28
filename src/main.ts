@@ -43,6 +43,24 @@ function cancelCpu(){
   cpuWorker?.terminate();
   cpuWorker=null;
 }
+function cpuWasmUrl(){return new URL('wasm/shogi_engine.wasm',document.baseURI).toString();}
+function ensureCpuWorker():Worker{
+  if(cpuWorker)return cpuWorker;
+  const worker=new Worker(new URL('./game/cpu-worker.ts',import.meta.url),{type:'module'});
+  worker.onerror=()=>{
+    if(cpuWorker!==worker)return;
+    worker.terminate();
+    cpuWorker=null;
+    cpuRequestId=null;
+    if(cpuThinking){cpuThinking=false;play();}
+  };
+  cpuWorker=worker;
+  return worker;
+}
+function warmCpuWorker(){
+  if(activeMode!=='cpu')return;
+  ensureCpuWorker().postMessage({type:'warmup',position:pos,level:cpuLevel,wasmUrl:cpuWasmUrl()});
+}
 function cancelOnline(){
   onlineUnsubscribe?.();
   onlineUnsubscribe=null;
@@ -94,6 +112,7 @@ function settingsGame(modeValue:Mode){
     if(modeValue==='cpu')cpuLevel=(document.querySelector('#cpuLevel') as HTMLSelectElement).value as CpuLevel;
     pos=initialPosition(handicap);
     resetInteraction();
+    if(modeValue==='cpu')warmCpuWorker();
     play();
     maybeStartCpu();
   });
@@ -362,18 +381,13 @@ function clickSquare(y:number,x:number,moves:Move[]){
 }
 function maybeStartCpu(){
   if(activeMode!=='cpu'||pos.turn===humanSide||gameOutcome(pos).ended||cpuThinking)return;
-  cancelCpu();
   cpuThinking=true;
   const requestId=crypto.randomUUID();
   const sourceKey=positionKey(pos);
-  const wasmUrl=new URL('wasm/shogi_engine.wasm',document.baseURI).toString();
   cpuRequestId=requestId;
-  cpuWorker=new Worker(new URL('./game/cpu-worker.ts',import.meta.url),{type:'module'});
-  cpuWorker.onmessage=(event:MessageEvent<{requestId:string;positionKey:string;ok:boolean;result?:{move:Move|null};error?:string}>)=>{
-    if(event.data.requestId!==cpuRequestId)return;
-    const worker=cpuWorker;
-    cpuWorker=null;
-    worker?.terminate();
+  const worker=ensureCpuWorker();
+  worker.onmessage=(event:MessageEvent<{requestId:string;positionKey:string;ok:boolean;result?:{move:Move|null};error?:string}>)=>{
+    if(worker!==cpuWorker||event.data.requestId!==cpuRequestId)return;
     cpuThinking=false;
     cpuRequestId=null;
     if(!event.data.ok||!event.data.result?.move||event.data.positionKey!==sourceKey||positionKey(pos)!==sourceKey){play();return;}
@@ -382,8 +396,7 @@ function maybeStartCpu(){
     resetInteraction();
     play();
   };
-  cpuWorker.onerror=()=>{cancelCpu();play();};
-  cpuWorker.postMessage({requestId,position:pos,level:cpuLevel,wasmUrl});
+  worker.postMessage({type:'search',requestId,position:pos,level:cpuLevel,wasmUrl:cpuWasmUrl()});
   play();
 }
 
