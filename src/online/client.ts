@@ -1,4 +1,7 @@
 import { positionKey } from '../game/engine';
+import { isHandicap } from '../game/handicaps';
+import { isOrderPreference, isSide } from '../game/setup';
+import type { OrderPreference } from '../game/setup';
 import type { Handicap, Move, Position, Side } from '../game/types';
 
 export interface OnlineRoomEntry {
@@ -7,6 +10,9 @@ export interface OnlineRoomEntry {
   passcode:string;
   seat:Side;
   revision:number;
+  handicap:Handicap;
+  handicapSide:Side;
+  order:OrderPreference;
 }
 
 interface RoomHandshakeResponse extends OnlineRoomEntry {playerToken:string;}
@@ -17,6 +23,11 @@ export interface AuthoritativeState {
   position:Position;
   status:'waiting'|'playing'|'ended';
   connections:{sente:number;gote:number};
+  handicap:Handicap;
+  handicapSide:Side;
+  order:OrderPreference;
+  startedAt?:number;
+  endedAt?:number;
   winner?:Side;
   resultReason?:string;
 }
@@ -39,7 +50,7 @@ const playerTokenPattern=/^[A-Za-z0-9_-]{32,128}$/;
 const passcodePattern=/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/;
 const boardKinds=new Set(['king','rook','bishop','gold','silver','knight','lance','pawn','dragon','horse','promotedSilver','promotedKnight','promotedLance','tokin']);
 const handKinds=['king','rook','bishop','gold','silver','knight','lance','pawn'] as const;
-const terminalReasons=new Set(['mate','repetition','perpetual-check']);
+const terminalReasons=new Set(['mate','repetition','perpetual-check','resignation']);
 
 function apiBase(value:string):string{
   const url=new URL(value);
@@ -74,6 +85,9 @@ function parseHandshake(value:unknown):RoomHandshakeResponse{
   const parsedInvite=new URL(inviteUrl,location.href);
   if(parsedInvite.protocol!=='https:'&&parsedInvite.protocol!=='http:')throw new Error('INVALID_INVITE_URL');
   if(parsedInvite.origin!==location.origin)throw new Error('INVALID_INVITE_ORIGIN');
+  const handicap=isHandicap(data.handicap)?data.handicap:'even';
+  const handicapSide=isSide(data.handicapSide)?data.handicapSide:'gote';
+  const order=isOrderPreference(data.order)?data.order:'sente';
   return{
     roomId,
     inviteUrl:parsedInvite.toString(),
@@ -81,6 +95,9 @@ function parseHandshake(value:unknown):RoomHandshakeResponse{
     playerToken,
     seat,
     revision,
+    handicap,
+    handicapSide,
+    order,
   };
 }
 
@@ -106,6 +123,9 @@ function publicEntry(handshake:RoomHandshakeResponse):OnlineRoomEntry{
     passcode:handshake.passcode,
     seat:handshake.seat,
     revision:handshake.revision,
+    handicap:handshake.handicap,
+    handicapSide:handshake.handicapSide,
+    order:handshake.order,
   };
 }
 
@@ -139,16 +159,12 @@ function rememberPlayer(handshake:RoomHandshakeResponse,explicitInviteToken?:str
   const info=publicEntry(handshake);
   const normalizedPasscode=handshake.passcode.trim().toUpperCase();
   const inviteToken=explicitInviteToken??inviteTokenFromUrl(handshake.inviteUrl);
-  // Discovery credentials and existing-player credentials remain separate.
-  // The private reconnect token is never put in invite/passcode/WebSocket URLs.
   sessionStorage.setItem(tokenKey(handshake.roomId),handshake.playerToken);
   sessionStorage.setItem(roomInfoKey(handshake.roomId),JSON.stringify(info));
   sessionStorage.setItem(passcodeRoomKey(normalizedPasscode),handshake.roomId);
   sessionStorage.setItem(activeRoomKey,handshake.roomId);
   if(inviteToken){
     sessionStorage.setItem(inviteRoomKey(inviteToken),handshake.roomId);
-    // The URL only carries the public room-discovery token. On reload, the client
-    // combines it with the separately stored private player token to reclaim the same seat.
     persistReconnectRoute(inviteToken);
   }
 }
@@ -163,7 +179,10 @@ function readRememberedRoom(roomId:string):OnlineRoomEntry|null{
     if(value.seat!=='sente'&&value.seat!=='gote')return null;
     if(!Number.isSafeInteger(value.revision)||Number(value.revision)<0)return null;
     if(!passcodePattern.test(value.passcode.trim().toUpperCase()))return null;
-    return{roomId,inviteUrl:value.inviteUrl,passcode:value.passcode,seat:value.seat,revision:Number(value.revision)};
+    const handicap=isHandicap(value.handicap)?value.handicap:'even';
+    const handicapSide=isSide(value.handicapSide)?value.handicapSide:'gote';
+    const order=isOrderPreference(value.order)?value.order:'sente';
+    return{roomId,inviteUrl:value.inviteUrl,passcode:value.passcode,seat:value.seat,revision:Number(value.revision),handicap,handicapSide,order};
   }catch{return null;}
 }
 
@@ -176,10 +195,11 @@ export function clearActiveOnlineRoom():void{
   sessionStorage.removeItem(activeRoomKey);
 }
 
-export async function createOnlineRoom(base:string,handicap:Handicap):Promise<OnlineRoomEntry>{
-  const op=`create:${handicap}`;
+export async function createOnlineRoom(base:string,handicap:Handicap,handicapSide:Side='gote',order:OrderPreference='random'):Promise<OnlineRoomEntry>{
+  if(!isSide(handicapSide)||!isOrderPreference(order))throw new Error('INVALID_MATCH_RULES');
+  const op=`create:${handicap}:${handicapSide}:${order}`;
   const requestId=operationRequestId(op);
-  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap}));
+  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap,handicapSide,order}));
   rememberPlayer(handshake);
   completeOperation(op);
   return publicEntry(handshake);
@@ -280,11 +300,19 @@ export class OnlineMatchConnection {
   }
 
   sendMove(move:Move):string{
+    return this.sendAction({type:'move',move});
+  }
+
+  sendResign():string{
+    return this.sendAction({type:'resign'});
+  }
+
+  private sendAction(action:{type:'move';move:Move}|{type:'resign'}):string{
     if(!this.socket||this.socket.readyState!==WebSocket.OPEN)throw new Error('SOCKET_NOT_READY');
     if(!this.authenticated||!this.seat)throw new Error('PLAYER_NOT_AUTHENTICATED');
     if(this.currentRevision<0)throw new Error('STATE_NOT_SYNCHRONIZED');
     const requestId=crypto.randomUUID();
-    this.socket.send(JSON.stringify({type:'move',requestId,expectedRevision:this.currentRevision,move}));
+    this.socket.send(JSON.stringify({...action,requestId,expectedRevision:this.currentRevision}));
     return requestId;
   }
 
@@ -362,15 +390,34 @@ export function parseAuthoritativeState(value:unknown,expectedRoomId:string):Aut
       if(winner!==undefined)return null;
     }else if(winner!=='sente'&&winner!=='gote')return null;
   }else if(winner!==undefined||resultReason!==undefined)return null;
+  const handicap=isHandicap(data.handicap)?data.handicap:'even';
+  const handicapSide=isSide(data.handicapSide)?data.handicapSide:'gote';
+  const order=isOrderPreference(data.order)?data.order:'sente';
+  const startedAt=parseTimestamp(data.startedAt);
+  const endedAt=parseTimestamp(data.endedAt);
+  if(data.status==='waiting'&&(startedAt!==undefined||endedAt!==undefined))return null;
+  if(data.status==='playing'&&endedAt!==undefined)return null;
+  if(data.status==='ended'&&startedAt!==undefined&&endedAt!==undefined&&endedAt<startedAt)return null;
   return{
     roomId:expectedRoomId,
     revision,
     position:data.position,
     status:data.status,
     connections,
+    handicap,
+    handicapSide,
+    order,
+    ...(startedAt!==undefined?{startedAt}:{}),
+    ...(endedAt!==undefined?{endedAt}:{}),
     ...(winner?{winner}:{}),
     ...(typeof resultReason==='string'?{resultReason}:{}),
   };
+}
+
+function parseTimestamp(value:unknown):number|undefined{
+  if(value===undefined)return undefined;
+  const number=Number(value);
+  return Number.isSafeInteger(number)&&number>0?number:undefined;
 }
 
 function parseConnections(value:unknown):{sente:number;gote:number}|null{
