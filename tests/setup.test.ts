@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configuredInitialPosition, oppositeSide, resolveHandicapSide } from '../src/game/setup';
+import { configuredInitialPosition, handicapPairFromLegacy, oppositeSide } from '../src/game/setup';
 
 function countSide(position:ReturnType<typeof configuredInitialPosition>,side:'sente'|'gote'){
   return position.board.flat().filter(piece=>piece?.side===side).length;
@@ -7,38 +7,40 @@ function countSide(position:ReturnType<typeof configuredInitialPosition>,side:'s
 
 describe('match setup',()=>{
   it('keeps even games at twenty pieces per side and starts with sente',()=>{
-    const position=configuredInitialPosition('even','sente');
+    const position=configuredInitialPosition({sente:'even',gote:'even'});
     expect(countSide(position,'sente')).toBe(20);
     expect(countSide(position,'gote')).toBe(20);
     expect(position.turn).toBe('sente');
   });
 
-  it('can apply the same handicap to either side',()=>{
-    const sente=configuredInitialPosition('two','sente');
-    const gote=configuredInitialPosition('two','gote');
-    expect(countSide(sente,'sente')).toBe(18);
-    expect(countSide(sente,'gote')).toBe(20);
-    expect(countSide(gote,'sente')).toBe(20);
-    expect(countSide(gote,'gote')).toBe(18);
-    expect(sente.board.flat().some(piece=>piece?.side==='sente'&&piece.kind==='rook')).toBe(false);
-    expect(sente.board.flat().some(piece=>piece?.side==='sente'&&piece.kind==='bishop')).toBe(false);
-    expect(gote.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='rook')).toBe(false);
-    expect(gote.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='bishop')).toBe(false);
+  it('applies independent handicaps to sente and gote at the same time',()=>{
+    const position=configuredInitialPosition({sente:'two',gote:'bishop'});
+    expect(countSide(position,'sente')).toBe(18);
+    expect(countSide(position,'gote')).toBe(19);
+    expect(position.board.flat().some(piece=>piece?.side==='sente'&&piece.kind==='rook')).toBe(false);
+    expect(position.board.flat().some(piece=>piece?.side==='sente'&&piece.kind==='bishop')).toBe(false);
+    expect(position.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='rook')).toBe(true);
+    expect(position.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='bishop')).toBe(false);
   });
 
-  it('resolves self and opponent against either seat',()=>{
-    expect(resolveHandicapSide('self','sente')).toBe('sente');
-    expect(resolveHandicapSide('opponent','sente')).toBe('gote');
-    expect(resolveHandicapSide('self','gote')).toBe('gote');
-    expect(resolveHandicapSide('opponent','gote')).toBe('sente');
+  it('can apply six-piece handicap to both sides simultaneously',()=>{
+    const position=configuredInitialPosition({sente:'six',gote:'six'});
+    expect(countSide(position,'sente')).toBe(14);
+    expect(countSide(position,'gote')).toBe(14);
+    for(const side of ['sente','gote'] as const){
+      const pieces=position.board.flat().filter(piece=>piece?.side===side);
+      expect(pieces.filter(piece=>piece?.kind==='lance')).toHaveLength(0);
+      expect(pieces.filter(piece=>piece?.kind==='knight')).toHaveLength(0);
+      expect(pieces.filter(piece=>piece?.kind==='rook')).toHaveLength(0);
+      expect(pieces.filter(piece=>piece?.kind==='bishop')).toHaveLength(0);
+    }
   });
 
-  it('removes every requested duplicate piece for six-piece handicap',()=>{
-    const position=configuredInitialPosition('six','sente');
-    const sente=position.board.flat().filter(piece=>piece?.side==='sente');
-    expect(sente).toHaveLength(14);
-    expect(sente.filter(piece=>piece?.kind==='lance')).toHaveLength(0);
-    expect(sente.filter(piece=>piece?.kind==='knight')).toHaveLength(0);
+  it('keeps legacy one-side setup readable for existing clients and rooms',()=>{
+    expect(handicapPairFromLegacy('rook','sente')).toEqual({sente:'rook',gote:'even'});
+    const position=configuredInitialPosition('rook','sente');
+    expect(countSide(position,'sente')).toBe(19);
+    expect(countSide(position,'gote')).toBe(20);
   });
 
   it('resolves opposite sides deterministically',()=>{

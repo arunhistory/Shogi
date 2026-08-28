@@ -1,6 +1,6 @@
 import { HANDICAP_RULE_LIST, isHandicap } from '../../../src/game/handicaps';
-import { isHandicapTarget, isOrderPreference, isSide } from '../../../src/game/setup';
-import type { HandicapTarget, OrderPreference } from '../../../src/game/setup';
+import { handicapPairFromLegacy, isOrderPreference, isSide } from '../../../src/game/setup';
+import type { OrderPreference, SideHandicaps } from '../../../src/game/setup';
 import type { Handicap, Move, PieceKind, Position, Side } from '../../../src/game/types';
 
 export interface Env {
@@ -16,7 +16,9 @@ export type ContentKey='terms'|'credits'|'licenses';
 
 export interface StoredRoomState {
   roomId:string;
-  handicap:Handicap;
+  senteHandicap?:Handicap;
+  goteHandicap?:Handicap;
+  handicap?:Handicap;
   handicapSide?:Side;
   order?:OrderPreference;
   creatorSide?:Side;
@@ -47,6 +49,8 @@ export interface Handshake {
   playerToken:string;
   seat:Side;
   revision:number;
+  senteHandicap:Handicap;
+  goteHandicap:Handicap;
   handicap:Handicap;
   handicapSide:Side;
   order:OrderPreference;
@@ -56,11 +60,12 @@ export interface CreateOperation {
   kind:'create';
   phase:'pending'|'done';
   requestId:string;
-  handicap:Handicap;
-  handicapTarget?:HandicapTarget;
-  handicapSide:Side;
-  order:OrderPreference;
-  creatorSide:Side;
+  senteHandicap?:Handicap;
+  goteHandicap?:Handicap;
+  handicap?:Handicap;
+  handicapSide?:Side;
+  order?:OrderPreference;
+  creatorSide?:Side;
   appUrl:string;
   roomId:string;
   inviteToken:string;
@@ -152,11 +157,6 @@ export function parseHandicap(value:unknown):Handicap{
   return value;
 }
 
-export function parseHandicapTarget(value:unknown):HandicapTarget{
-  if(!isHandicapTarget(value))throw new Error('INVALID_HANDICAP_TARGET');
-  return value;
-}
-
 export function parseSide(value:unknown):Side{
   if(!isSide(value))throw new Error('INVALID_SIDE');
   return value;
@@ -165,6 +165,19 @@ export function parseSide(value:unknown):Side{
 export function parseOrder(value:unknown):OrderPreference{
   if(!isOrderPreference(value))throw new Error('INVALID_ORDER');
   return value;
+}
+
+export function normalizeHandicaps(value:{senteHandicap?:unknown;goteHandicap?:unknown;handicap?:unknown;handicapSide?:unknown}):SideHandicaps{
+  if(isHandicap(value.senteHandicap)&&isHandicap(value.goteHandicap))return{sente:value.senteHandicap,gote:value.goteHandicap};
+  const handicap=isHandicap(value.handicap)?value.handicap:'even';
+  const side=isSide(value.handicapSide)?value.handicapSide:'gote';
+  return handicapPairFromLegacy(handicap,side);
+}
+
+export function legacyHandicapProjection(handicapsValue:SideHandicaps):{handicap:Handicap;handicapSide:Side}{
+  if(handicapsValue.gote!=='even')return{handicap:handicapsValue.gote,handicapSide:'gote'};
+  if(handicapsValue.sente!=='even')return{handicap:handicapsValue.sente,handicapSide:'sente'};
+  return{handicap:'even',handicapSide:'gote'};
 }
 
 export function normalizeHandicapSide(state:StoredRoomState):Side{return isSide(state.handicapSide)?state.handicapSide:'gote';}
@@ -241,14 +254,18 @@ export function publicState(state:StoredRoomState,ctx:DurableObjectState){
     const attachment=socket.deserializeAttachment() as SocketAttachment|undefined;
     if(attachment?.authenticated&&attachment.seat)connections[attachment.seat]++;
   }
+  const handicapsValue=normalizeHandicaps(state);
+  const legacy=legacyHandicapProjection(handicapsValue);
   return{
     roomId:state.roomId,
     revision:state.revision,
     position:state.position,
     status:state.status,
     connections,
-    handicap:state.handicap,
-    handicapSide:normalizeHandicapSide(state),
+    senteHandicap:handicapsValue.sente,
+    goteHandicap:handicapsValue.gote,
+    handicap:legacy.handicap,
+    handicapSide:legacy.handicapSide,
     order:normalizeOrder(state),
     ...(state.startedAt?{startedAt:state.startedAt}:{}),
     ...(state.endedAt?{endedAt:state.endedAt}:{}),

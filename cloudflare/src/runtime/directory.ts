@@ -7,9 +7,10 @@ import {
   errorJson,
   inviteUrl,
   jsonHeaders,
+  legacyHandicapProjection,
+  normalizeHandicaps,
   oppositeSide,
   parseHandicap,
-  parseHandicapTarget,
   parseOrder,
   parseSide,
   passcodeAlphabet,
@@ -22,27 +23,46 @@ import {
   sha256,
   validateAppUrl,
 } from './common';
-import { isHandicapTarget, isOrderPreference, isSide } from '../../../src/game/setup';
-import type { HandicapTarget } from '../../../src/game/setup';
+import { isOrderPreference, isSide } from '../../../src/game/setup';
+import type { OrderPreference, SideHandicaps } from '../../../src/game/setup';
+import type { Handicap, Side } from '../../../src/game/types';
 
-function normalizeCreateOperation(operation:CreateOperation):CreateOperation&{handicapTarget:HandicapTarget}{
-  const stored=operation as CreateOperation&{handicapTarget?:unknown;handicapSide?:unknown;order?:unknown;creatorSide?:unknown};
-  const creatorSide=isSide(stored.creatorSide)?stored.creatorSide:'sente';
-  const handicapSide=isSide(stored.handicapSide)?stored.handicapSide:'gote';
-  const handicapTarget=isHandicapTarget(stored.handicapTarget)
-    ?stored.handicapTarget
-    :handicapSide===creatorSide?'self':'opponent';
+type NormalizedCreateOperation=CreateOperation&{
+  senteHandicap:Handicap;
+  goteHandicap:Handicap;
+  handicap:Handicap;
+  handicapSide:Side;
+  order:OrderPreference;
+  creatorSide:Side;
+};
+
+function normalizeCreateOperation(operation:CreateOperation):NormalizedCreateOperation{
+  const stored=operation as CreateOperation&{order?:unknown;creatorSide?:unknown};
+  const handicapsValue=normalizeHandicaps(operation);
+  const legacy=legacyHandicapProjection(handicapsValue);
   return{
     ...operation,
-    handicapTarget,
-    handicapSide,
+    senteHandicap:handicapsValue.sente,
+    goteHandicap:handicapsValue.gote,
+    handicap:legacy.handicap,
+    handicapSide:legacy.handicapSide,
     order:isOrderPreference(stored.order)?stored.order:'sente',
-    creatorSide,
+    creatorSide:isSide(stored.creatorSide)?stored.creatorSide:'sente',
   };
 }
 
-function resolvedHandicapSide(target:HandicapTarget,creatorSide:'sente'|'gote'){
-  return target==='self'?creatorSide:oppositeSide(creatorSide);
+function parseRequestedHandicaps(body:Record<string,unknown>):SideHandicaps{
+  const hasSente=body.senteHandicap!==undefined;
+  const hasGote=body.goteHandicap!==undefined;
+  if(hasSente||hasGote){
+    if(!hasSente||!hasGote)throw new Error('INCOMPLETE_HANDICAP_PAIR');
+    if(body.handicap!==undefined||body.handicapSide!==undefined||body.handicapTarget!==undefined)throw new Error('AMBIGUOUS_HANDICAP_RULES');
+    return{sente:parseHandicap(body.senteHandicap),gote:parseHandicap(body.goteHandicap)};
+  }
+  if(body.handicapTarget!==undefined)throw new Error('HANDICAP_TARGET_OBSOLETE');
+  const handicap=body.handicap===undefined?'even':parseHandicap(body.handicap);
+  const side=body.handicapSide===undefined?'gote':parseSide(body.handicapSide);
+  return side==='sente'?{sente:handicap,gote:'even'}:{sente:'even',gote:handicap};
 }
 
 export class ShogiDirectory extends DurableObject<Env>{
@@ -124,22 +144,17 @@ export class ShogiDirectory extends DurableObject<Env>{
 
   private async create(body:Record<string,unknown>,ip:string):Promise<Response>{
     const id=requestId(body.requestId);
-    const handicap=parseHandicap(body.handicap);
-    const requestedTarget=body.handicapTarget===undefined?null:parseHandicapTarget(body.handicapTarget);
-    const legacyHandicapSide=body.handicapSide===undefined?null:parseSide(body.handicapSide);
-    if(requestedTarget&&legacyHandicapSide)return errorJson('AMBIGUOUS_HANDICAP_TARGET',400);
+    const handicapsValue=parseRequestedHandicaps(body);
     const order=body.order===undefined?'sente':parseOrder(body.order);
     const appUrl=validateAppUrl(body.appUrl);
     const opKey=`create:${id}`;
     const stored=await this.ctx.storage.get<CreateOperation>(opKey);
     if(stored){
       const existing=normalizeCreateOperation(stored);
-      const effectiveLegacySide=legacyHandicapSide??'gote';
-      const target=requestedTarget??(effectiveLegacySide===existing.creatorSide?'self':'opponent');
-      const legacySideMatches=requestedTarget!==null||existing.handicapSide===effectiveLegacySide;
       if(
-        existing.kind!=='create'||existing.requestId!==id||existing.handicap!==handicap||
-        existing.handicapTarget!==target||!legacySideMatches||existing.order!==order||existing.appUrl!==appUrl
+        existing.kind!=='create'||existing.requestId!==id||
+        existing.senteHandicap!==handicapsValue.sente||existing.goteHandicap!==handicapsValue.gote||
+        existing.order!==order||existing.appUrl!==appUrl
       )return errorJson('REQUEST_ID_CONFLICT',409);
       return await this.resumeCreate(opKey,existing);
     }
@@ -147,10 +162,12 @@ export class ShogiDirectory extends DurableObject<Env>{
     await this.enforceRateLimit(ip,'create');
     const passcode=await this.allocatePasscode(opKey);
     const creatorSide=order==='random'?randomSide():order;
-    const handicapSide=legacyHandicapSide??resolvedHandicapSide(requestedTarget??'opponent',creatorSide);
-    const handicapTarget=requestedTarget??(handicapSide===creatorSide?'self':'opponent');
+    const legacy=legacyHandicapProjection(handicapsValue);
     const operation:CreateOperation={
-      kind:'create',phase:'pending',requestId:id,handicap,handicapTarget,handicapSide,order,creatorSide,appUrl,
+      kind:'create',phase:'pending',requestId:id,
+      senteHandicap:handicapsValue.sente,goteHandicap:handicapsValue.gote,
+      handicap:legacy.handicap,handicapSide:legacy.handicapSide,
+      order,creatorSide,appUrl,
       roomId:randomToken(18),inviteToken:randomToken(24),passcode,
     };
     await this.ctx.storage.put(opKey,operation);
@@ -170,6 +187,8 @@ export class ShogiDirectory extends DurableObject<Env>{
       headers:{'content-type':'application/json'},
       body:JSON.stringify({
         roomId:operation.roomId,
+        senteHandicap:operation.senteHandicap,
+        goteHandicap:operation.goteHandicap,
         handicap:operation.handicap,
         handicapSide:operation.handicapSide,
         order:operation.order,
@@ -196,6 +215,8 @@ export class ShogiDirectory extends DurableObject<Env>{
       playerToken,
       seat:operation.creatorSide,
       revision:room.revision,
+      senteHandicap:operation.senteHandicap,
+      goteHandicap:operation.goteHandicap,
       handicap:operation.handicap,
       handicapSide:operation.handicapSide,
       order:operation.order,
@@ -242,7 +263,11 @@ export class ShogiDirectory extends DurableObject<Env>{
       body:JSON.stringify({playerTokenHash,joinRequestId}),
     }));
     if(!joined.ok)return new Response(joined.body,{status:joined.status,headers:jsonHeaders});
-    const room=await joined.json() as {revision:number;seat:'sente'|'gote';handicap:Handshake['handicap'];handicapSide:Handshake['handicapSide'];order:Handshake['order']};
+    const room=await joined.json() as {
+      revision:number;seat:'sente'|'gote';
+      senteHandicap:Handshake['senteHandicap'];goteHandicap:Handshake['goteHandicap'];
+      handicap:Handshake['handicap'];handicapSide:Handshake['handicapSide'];order:Handshake['order'];
+    };
     await this.ctx.storage.put(opKey,{...operation,phase:'done'} satisfies JoinOperation);
     const result:Handshake={
       roomId:operation.roomId,
@@ -251,6 +276,8 @@ export class ShogiDirectory extends DurableObject<Env>{
       playerToken,
       seat:room.seat,
       revision:room.revision,
+      senteHandicap:room.senteHandicap,
+      goteHandicap:room.goteHandicap,
       handicap:room.handicap,
       handicapSide:room.handicapSide,
       order:room.order,

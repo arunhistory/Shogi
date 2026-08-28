@@ -1,14 +1,16 @@
 import { DurableObject } from 'cloudflare:workers';
 import { configuredInitialPosition } from '../../../src/game/setup';
+import type { SideHandicaps } from '../../../src/game/setup';
 import type { Move, Side } from '../../../src/game/types';
 import {
   type Env,
   type SocketAttachment,
   type StoredRoomState,
   errorJson,
+  legacyHandicapProjection,
   moveFingerprint,
   normalizeCreatorSide,
-  normalizeHandicapSide,
+  normalizeHandicaps,
   normalizeOrder,
   oppositeSide,
   parseHandicap,
@@ -26,6 +28,18 @@ import { validateMoveWithWasm } from './rule-parity';
 import { playerTokenPattern, websocketPlayerToken, websocketProtocol } from './socket-auth';
 
 const joinRequestPattern=/^(passcode|invite):[A-Za-z0-9_-]{8,128}$/;
+
+function parseInitHandicaps(body:Record<string,unknown>):SideHandicaps{
+  const hasSente=body.senteHandicap!==undefined;
+  const hasGote=body.goteHandicap!==undefined;
+  if(hasSente||hasGote){
+    if(!hasSente||!hasGote)throw new Error('INCOMPLETE_HANDICAP_PAIR');
+    return{sente:parseHandicap(body.senteHandicap),gote:parseHandicap(body.goteHandicap)};
+  }
+  const handicap=body.handicap===undefined?'even':parseHandicap(body.handicap);
+  const side=body.handicapSide===undefined?'gote':parseSide(body.handicapSide);
+  return side==='sente'?{sente:handicap,gote:'even'}:{sente:'even',gote:handicap};
+}
 
 export class ShogiRoom extends DurableObject<Env>{
   private gate:Promise<void>=Promise.resolve();
@@ -98,16 +112,17 @@ export class ShogiRoom extends DurableObject<Env>{
     const creatorTokenHash=typeof body.creatorTokenHash==='string'?body.creatorTokenHash:'';
     const creationRequestId=typeof body.creationRequestId==='string'?body.creationRequestId:'';
     if(!/^[A-Za-z0-9_-]{16,128}$/.test(roomId)||!/^[a-f0-9]{64}$/.test(creatorTokenHash)||!requestIdPattern.test(creationRequestId))return errorJson('INVALID_ROOM_INIT',400);
-    const handicap=parseHandicap(body.handicap);
-    const handicapSide=body.handicapSide===undefined?'gote':parseSide(body.handicapSide);
+    const handicapsValue=parseInitHandicaps(body);
+    const legacy=legacyHandicapProjection(handicapsValue);
     const order=body.order===undefined?'sente':parseOrder(body.order);
     const creatorSide=body.creatorSide===undefined?'sente':parseSide(body.creatorSide);
     const existing=await this.ctx.storage.get<StoredRoomState>('state');
     if(existing){
       const existingCreator=normalizeCreatorSide(existing);
       const existingHash=existing.players[existingCreator];
+      const existingHandicaps=normalizeHandicaps(existing);
       if(
-        existing.roomId===roomId&&existing.handicap===handicap&&normalizeHandicapSide(existing)===handicapSide&&
+        existing.roomId===roomId&&existingHandicaps.sente===handicapsValue.sente&&existingHandicaps.gote===handicapsValue.gote&&
         normalizeOrder(existing)===order&&existingCreator===creatorSide&&existing.creationRequestId===creationRequestId&&
         !!existingHash&&safeEqual(existingHash,creatorTokenHash)
       )return responseJson({ok:true,revision:existing.revision});
@@ -117,14 +132,16 @@ export class ShogiRoom extends DurableObject<Env>{
     players[creatorSide]=creatorTokenHash;
     const state:StoredRoomState={
       roomId,
-      handicap,
-      handicapSide,
+      senteHandicap:handicapsValue.sente,
+      goteHandicap:handicapsValue.gote,
+      handicap:legacy.handicap,
+      handicapSide:legacy.handicapSide,
       order,
       creatorSide,
       creationRequestId,
       revision:0,
       status:'waiting',
-      position:configuredInitialPosition(handicap,handicapSide),
+      position:configuredInitialPosition(handicapsValue),
       players,
       processed:{sente:{},gote:{}},
     };
@@ -167,12 +184,16 @@ export class ShogiRoom extends DurableObject<Env>{
   }
 
   private joinResponse(state:StoredRoomState,seat:Side):Response{
+    const handicapsValue=normalizeHandicaps(state);
+    const legacy=legacyHandicapProjection(handicapsValue);
     return responseJson({
       ok:true,
       revision:state.revision,
       seat,
-      handicap:state.handicap,
-      handicapSide:normalizeHandicapSide(state),
+      senteHandicap:handicapsValue.sente,
+      goteHandicap:handicapsValue.gote,
+      handicap:legacy.handicap,
+      handicapSide:legacy.handicapSide,
       order:normalizeOrder(state),
     });
   }
@@ -280,14 +301,18 @@ export class ShogiRoom extends DurableObject<Env>{
       if(attachment?.authenticated&&attachment.seat)connections[attachment.seat]++;
     }
     const clientPosition={...state.position,history:state.position.history.slice(-1)};
+    const handicapsValue=normalizeHandicaps(state);
+    const legacy=legacyHandicapProjection(handicapsValue);
     return{
       roomId:state.roomId,
       revision:state.revision,
       position:clientPosition,
       status:state.status,
       connections,
-      handicap:state.handicap,
-      handicapSide:normalizeHandicapSide(state),
+      senteHandicap:handicapsValue.sente,
+      goteHandicap:handicapsValue.gote,
+      handicap:legacy.handicap,
+      handicapSide:legacy.handicapSide,
       order:normalizeOrder(state),
       ...(state.startedAt?{startedAt:state.startedAt}:{}),
       ...(state.endedAt?{endedAt:state.endedAt}:{}),
