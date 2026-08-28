@@ -139,6 +139,9 @@ async function navigate(cdp,viewport){
   await cdp.send('Page.navigate',{url:`${appUrl}?smoke=${Date.now()}`});
   await waitFor(cdp,`document.readyState==='complete'&&document.querySelectorAll('.menu button').length===3`,'menu');
   assert(await evaluate(cdp,`document.documentElement.scrollWidth<=window.innerWidth+1`),`${viewport.name}:horizontal overflow on menu`);
+  assert(await evaluate(cdp,`Boolean(document.querySelector('.ad-bar'))`),`${viewport.name}:ad bar missing`);
+  assert(await evaluate(cdp,`Math.abs(document.querySelector('.ad-bar').getBoundingClientRect().bottom-window.innerHeight)<=1`),`${viewport.name}:ad bar is not at viewport bottom`);
+  assert(await evaluate(cdp,`document.querySelector('.site-footer').getBoundingClientRect().bottom<=document.querySelector('.ad-bar').getBoundingClientRect().top+1`),`${viewport.name}:footer not above ad bar`);
 }
 
 async function testRulesAndSettings(cdp){
@@ -147,7 +150,7 @@ async function testRulesAndSettings(cdp){
   await evaluate(cdp,`document.querySelector('#rules').click()`);
   await waitFor(cdp,`document.querySelector('.rules-document')`,'rules');
   assert(await evaluate(cdp,`document.querySelectorAll('.rules-document section').length>=10`),'rules sections missing');
-  for(const text of ['二歩','打ち歩詰め','千日手','入玉・持将棋']){
+  for(const text of ['二歩','打ち歩詰め','千日手','入玉・持将棋','投了','先手・後手']){
     assert(await evaluate(cdp,`document.querySelector('.rules-document').textContent.includes(${JSON.stringify(text)})`),`rules missing: ${text}`);
   }
   await evaluate(cdp,`document.querySelector('#back').click()`);
@@ -162,11 +165,26 @@ async function testRulesAndSettings(cdp){
   await waitFor(cdp,`document.querySelector('.menu')`,'menu after settings');
 }
 
-async function startMode(cdp,mode){
+async function testBackHierarchy(cdp){
+  await evaluate(cdp,`document.querySelector('#start').click()`);
+  await waitFor(cdp,`document.querySelector('[data-mode="cpu"]')`,'mode for back hierarchy');
+  await evaluate(cdp,`document.querySelector('[data-mode="cpu"]').click()`);
+  await waitFor(cdp,`document.querySelector('#go')`,'settings for back hierarchy');
+  await evaluate(cdp,`document.querySelector('#back').click()`);
+  await waitFor(cdp,`document.querySelector('[data-mode="cpu"]')`,'mode after settings back');
+  assert(await evaluate(cdp,`!document.querySelector('.menu')`),'settings back jumped directly home');
+  await evaluate(cdp,`document.querySelector('#back').click()`);
+  await waitFor(cdp,`document.querySelector('.menu')`,'home after mode back');
+}
+
+async function startMode(cdp,mode,order='sente'){
   await evaluate(cdp,`document.querySelector('#start').click()`);
   await waitFor(cdp,`document.querySelector('[data-mode="${mode}"]')`,'mode selection');
   await evaluate(cdp,`document.querySelector('[data-mode="${mode}"]').click()`);
   await waitFor(cdp,`document.querySelector('#go')`,'game settings');
+  assert(await evaluate(cdp,`Boolean(document.querySelector('#order')&&document.querySelector('#handicap')&&document.querySelector('#handicapSide'))`),'match setup selectors missing');
+  assert(await evaluate(cdp,`document.querySelector('#order').value==='random'`),'random order must be default');
+  await evaluate(cdp,`document.querySelector('#order').value=${JSON.stringify(order)}`);
   await evaluate(cdp,`document.querySelector('#go').click()`);
   await waitFor(cdp,`document.querySelectorAll('.board .cell').length===81`,'board');
 }
@@ -177,11 +195,30 @@ async function moveFirstPawn(cdp){
   await evaluate(cdp,`document.querySelectorAll('.board .cell')[45].click()`);
 }
 
+async function testResignation(cdp,viewportName){
+  assert(await evaluate(cdp,`document.querySelector('#resign')?.textContent==='諦める'`),`${viewportName}:resign button missing`);
+  assert(await evaluate(cdp,`document.querySelector('#elapsed')?.textContent!=='--:--'`),`${viewportName}:elapsed clock did not start`);
+  await evaluate(cdp,`document.querySelector('#resign').click()`);
+  await waitFor(cdp,`document.querySelector('.resign-dialog')`,'resign dialog');
+  assert(await evaluate(cdp,`document.querySelector('.resign-dialog').textContent.includes('本当にいいですか？')`),`${viewportName}:resign confirmation text missing`);
+  await evaluate(cdp,`document.querySelector('#resignNo').click()`);
+  await waitFor(cdp,`!document.querySelector('.resign-dialog')`,'resign cancelled');
+  assert(await evaluate(cdp,`document.querySelectorAll('.board .cell').length===81`),`${viewportName}:cancelled resignation did not continue`);
+  await evaluate(cdp,`document.querySelector('#resign').click()`);
+  await waitFor(cdp,`document.querySelector('#resignYes')`,'resign yes');
+  await evaluate(cdp,`document.querySelector('#resignYes').click()`);
+  await waitFor(cdp,`document.querySelector('.result-panel')`,'resignation result');
+  const result=await evaluate(cdp,`document.querySelector('.result-panel').textContent`);
+  assert(result.includes('勝利')&&result.includes('敗北'),`${viewportName}:local victory/defeat result missing`);
+  assert(await evaluate(cdp,`[...document.querySelectorAll('.result-actions button')].map(x=>x.textContent).join('|')==='もう一度対戦する|同じルールでもう一度対戦する|ホームに戻る'`),`${viewportName}:result actions mismatch`);
+  assert(await evaluate(cdp,`document.documentElement.scrollWidth<=window.innerWidth+1`),`${viewportName}:horizontal overflow after result`);
+}
+
 async function testLocal(cdp,viewportName){
-  await startMode(cdp,'local');
-  assert(await evaluate(cdp,`document.querySelector('.game header strong').textContent.includes('先手番')`),`${viewportName}:initial turn mismatch`);
+  await startMode(cdp,'local','sente');
+  assert(await evaluate(cdp,`document.querySelector('.game header .match-header>strong').textContent.includes('先手番')`),`${viewportName}:initial turn mismatch`);
   await moveFirstPawn(cdp);
-  await waitFor(cdp,`document.querySelector('.game header strong').textContent.includes('後手番')`,'local move committed');
+  await waitFor(cdp,`document.querySelector('.game header .match-header>strong').textContent.includes('後手番')`,'local move committed');
   assert(await evaluate(cdp,`document.querySelectorAll('.board .cell')[54].textContent.trim()===''`),`${viewportName}:source square did not clear`);
   assert(await evaluate(cdp,`document.querySelectorAll('.board .cell')[45].textContent.trim()==='歩'`),`${viewportName}:destination square missing pawn`);
   assert(await evaluate(cdp,`document.documentElement.scrollWidth<=window.innerWidth+1`),`${viewportName}:horizontal overflow on game`);
@@ -190,12 +227,12 @@ async function testLocal(cdp,viewportName){
 async function testCpuWorker(cdp){
   await cdp.send('Page.navigate',{url:`${appUrl}?cpu-smoke=${Date.now()}`});
   await waitFor(cdp,`document.querySelectorAll('.menu button').length===3`,'CPU fresh menu');
-  await startMode(cdp,'cpu');
+  await startMode(cdp,'cpu','sente');
   await evaluate(cdp,`(()=>{
     window.__shogiCpuSmoke={sawThinking:false,done:false};
     const root=document.querySelector('#app');
     const read=()=>{
-      const status=document.querySelector('.game header strong')?.textContent??'';
+      const status=document.querySelector('.game header .match-header>strong')?.textContent??'';
       if(status.includes('CPU思考中'))window.__shogiCpuSmoke.sawThinking=true;
       if(window.__shogiCpuSmoke.sawThinking&&status.includes('先手番')){
         window.__shogiCpuSmoke.done=true;
@@ -210,7 +247,7 @@ async function testCpuWorker(cdp){
   await moveFirstPawn(cdp);
   await waitFor(cdp,`window.__shogiCpuSmoke?.done===true`,'CPU worker returned control',20_000);
   assert(await evaluate(cdp,`window.__shogiCpuSmoke.sawThinking===true`),'CPU thinking state was never rendered');
-  assert(await evaluate(cdp,`document.querySelector('.game header strong').textContent.includes('先手番')`),'CPU did not complete its reply');
+  assert(await evaluate(cdp,`document.querySelector('.game header .match-header>strong').textContent.includes('先手番')`),'CPU did not complete its reply');
 }
 
 const chromePath=findChrome();
@@ -255,16 +292,17 @@ try{
 
   await navigate(cdp,{name:'desktop',width:1280,height:800,mobile:false});
   await testRulesAndSettings(cdp);
+  await testBackHierarchy(cdp);
   await cdp.send('Page.navigate',{url:`${appUrl}?local-desktop=${Date.now()}`});
   await waitFor(cdp,`document.querySelector('.menu')`,'desktop local fresh menu');
   await testLocal(cdp,'desktop');
   await testCpuWorker(cdp);
 
   await navigate(cdp,{name:'mobile',width:390,height:844,mobile:true});
-  await testLocal(cdp,'mobile');
+  await testResignation(cdp,'mobile');
 
   assert(browserErrors.length===0,`uncaught browser errors:\n${browserErrors.join('\n')}`);
-  console.log(JSON.stringify({ok:true,desktop:true,mobile:true,localMove:true,cpuWorker:true}));
+  console.log(JSON.stringify({ok:true,desktop:true,mobile:true,localMove:true,cpuWorker:true,resignation:true,backHierarchy:true,adBar:true}));
 }finally{
   cdp?.close();
   await stopChild(chrome);
