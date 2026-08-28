@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Handicap } from '../../../src/game/types';
 import {
   type CreateOperation,
   type Env,
@@ -8,6 +7,7 @@ import {
   errorJson,
   inviteUrl,
   jsonHeaders,
+  parseHandicap,
   passcodeAlphabet,
   randomPasscode,
   randomToken,
@@ -103,8 +103,7 @@ export class ShogiDirectory extends DurableObject<Env>{
 
   private async create(body:Record<string,unknown>,ip:string):Promise<Response>{
     const id=requestId(body.requestId);
-    const handicap=body.handicap as Handicap;
-    if(!['even','rook','bishop','two','four','six'].includes(String(handicap)))throw new Error('INVALID_HANDICAP');
+    const handicap=parseHandicap(body.handicap);
     const appUrl=validateAppUrl(body.appUrl);
     const opKey=`create:${id}`;
     const existing=await this.ctx.storage.get<CreateOperation>(opKey);
