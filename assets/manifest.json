@@ -1,6 +1,12 @@
 {
   "version": 1,
-  "bgm": [],
+  "bgm": [
+    {
+      "id": "maou-bgm-8bit26",
+      "url": "assets/audio/maou_bgm_8bit26.ogg",
+      "loop": true
+    }
+  ],
   "se": [],
   "visuals": []
 }
