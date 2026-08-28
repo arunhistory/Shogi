@@ -39,8 +39,21 @@ function upgradeManagedContent():void{
   }
 }
 
+function removeSettingsMaterialNote():void{
+  const panel=document.querySelector<HTMLElement>('.settings-panel');
+  if(!panel)return;
+  for(const note of panel.querySelectorAll<HTMLParagraphElement>(':scope > .note')){
+    if((note.textContent??'').includes('BGM・SE素材は外部manifestから読み込みます'))note.remove();
+  }
+}
+
+function enhanceUi():void{
+  upgradeManagedContent();
+  removeSettingsMaterialNote();
+}
+
 const app=document.querySelector('#app');
 if(app){
-  new MutationObserver(upgradeManagedContent).observe(app,{subtree:true,childList:true});
-  upgradeManagedContent();
+  new MutationObserver(enhanceUi).observe(app,{subtree:true,childList:true});
+  enhanceUi();
 }
