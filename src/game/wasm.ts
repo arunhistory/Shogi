@@ -8,6 +8,12 @@ export interface WasmSearchResult {
   nodesVisited:number;
 }
 
+export interface WasmRootSearchResult {
+  score:number;
+  nodesVisited:number;
+  complete:boolean;
+}
+
 export interface WasmShogiEngine {
   evaluate:(position:Position,perspective:Side)=>number;
   legalMoves:(position:Position)=>Move[];
@@ -15,6 +21,7 @@ export interface WasmShogiEngine {
   isMate:(position:Position)=>boolean;
   repetitionStatus:(position:Position)=>RepetitionStatus;
   searchBestMove:(position:Position,maxDepth:number,nodeLimit:number)=>WasmSearchResult;
+  searchRootMove:(position:Position,move:Move,maxDepth:number,nodeLimit:number,lane:number)=>WasmRootSearchResult;
 }
 
 interface ShogiWasmExports extends WebAssembly.Exports {
@@ -31,6 +38,8 @@ interface ShogiWasmExports extends WebAssembly.Exports {
   shogi_is_mate:(count:number)=>number;
   shogi_repetition_status_with_history:(positionCount:number,historyWordCount:number)=>number;
   shogi_search_best_move_with_history:(positionCount:number,historyWordCount:number,maxDepth:number,nodeLimit:number)=>number;
+  shogi_search_root_move_with_history:(positionCount:number,historyWordCount:number,encodedMove:number,maxDepth:number,nodeLimit:number,lane:number)=>number;
+  shogi_parallel_search_complete:()=>number;
   shogi_nodes_searched:()=>number;
 }
 
@@ -44,6 +53,7 @@ const FNV_PRIME=1099511628211n;
 const FNV_PRIMARY_SEED=1469598103934665603n;
 const FNV_SECONDARY_SEED=0x84222325cbf29ce4n;
 const MASK_64=(1n<<64n)-1n;
+const INVALID_PARALLEL_SCORE=2147483647;
 
 const pieceCodes:Record<BoardKind,number>={
   pawn:1,
@@ -64,6 +74,9 @@ const pieceCodes:Record<BoardKind,number>={
 
 const dropKinds:Record<number,Exclude<PieceKind,'king'>>={
   1:'pawn',2:'lance',3:'knight',4:'silver',5:'gold',6:'bishop',7:'rook',
+};
+const dropCodes:Record<Exclude<PieceKind,'king'>,number>={
+  pawn:1,lance:2,knight:3,silver:4,gold:5,bishop:6,rook:7,
 };
 const handKinds:Exclude<PieceKind,'king'>[]=['pawn','lance','knight','silver','gold','bishop','rook'];
 const sideCode=(side:Side)=>side==='sente'?1:-1;
@@ -146,6 +159,20 @@ function decodeMove(code:number):Move|null{
   };
 }
 
+function encodeMove(move:Move):number{
+  const to=move.to[0]*9+move.to[1];
+  if(!Number.isSafeInteger(to)||to<0||to>=81)throw new Error('WASM_MOVE_DESTINATION_INVALID');
+  if(move.drop){
+    if(move.drop==='king')throw new Error('WASM_KING_DROP_INVALID');
+    const drop=dropCodes[move.drop];
+    return to|(127<<7)|(drop<<14);
+  }
+  if(!move.from)throw new Error('WASM_MOVE_SOURCE_MISSING');
+  const from=move.from[0]*9+move.from[1];
+  if(!Number.isSafeInteger(from)||from<0||from>=81)throw new Error('WASM_MOVE_SOURCE_INVALID');
+  return to|(from<<7)|(move.promote?1<<18:0);
+}
+
 function validExports(exports:WebAssembly.Exports):exports is ShogiWasmExports{
   const candidate=exports as Partial<ShogiWasmExports>;
   return candidate.memory instanceof WebAssembly.Memory
@@ -161,6 +188,8 @@ function validExports(exports:WebAssembly.Exports):exports is ShogiWasmExports{
     &&typeof candidate.shogi_is_mate==='function'
     &&typeof candidate.shogi_repetition_status_with_history==='function'
     &&typeof candidate.shogi_search_best_move_with_history==='function'
+    &&typeof candidate.shogi_search_root_move_with_history==='function'
+    &&typeof candidate.shogi_parallel_search_complete==='function'
     &&typeof candidate.shogi_nodes_searched==='function';
 }
 
@@ -283,6 +312,23 @@ export async function loadWasmShogiEngine(url:string):Promise<WasmShogiEngine|nu
         const move=decodeMove(wasm.shogi_search_best_move_with_history(positionCount,historyWords,depth,nodes));
         const nodesVisited=wasm.shogi_nodes_searched();
         return{move,nodesVisited:Number.isSafeInteger(nodesVisited)&&nodesVisited>=0?nodesVisited:0};
+      },
+      searchRootMove(position,move,maxDepth,nodeLimit,lane){
+        const depth=Math.max(1,Math.min(12,Math.trunc(maxDepth)));
+        const nodes=Math.max(100,Math.min(250_000,Math.trunc(nodeLimit)));
+        const laneValue=Math.max(0,Math.min(255,Math.trunc(lane)));
+        const positionCount=writePosition(position);
+        const historyWords=writeHistory(position);
+        const score=wasm.shogi_search_root_move_with_history(positionCount,historyWords,encodeMove(move),depth,nodes,laneValue);
+        if(score===INVALID_PARALLEL_SCORE)throw new Error('WASM_ROOT_SEARCH_INVALID');
+        const completeValue=wasm.shogi_parallel_search_complete();
+        if(completeValue!==0&&completeValue!==1)throw new Error('WASM_ROOT_SEARCH_COMPLETION_INVALID');
+        const nodesVisited=wasm.shogi_nodes_searched();
+        return{
+          score,
+          complete:completeValue===1,
+          nodesVisited:Number.isSafeInteger(nodesVisited)&&nodesVisited>=0?nodesVisited:0,
+        };
       },
     };
   }catch{

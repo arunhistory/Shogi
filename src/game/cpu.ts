@@ -2,18 +2,41 @@ import { applyLegalMoveUnchecked, isCheck, legalMoves, positionKey, repetitionSt
 import type { BoardKind, CpuLevel, Move, Position, Side } from './types';
 
 interface CpuBudget {
-  maxDepth: number;
-  timeMs: number;
-  beginnerPool?: number;
+  maxDepth:number;
+  timeMs:number;
+  beginnerPool?:number;
 }
 
-// These are computation ceilings, not shogi clock settings. Clock/seconds remain undecided.
+export interface CpuParallelProfile {
+  replyDeadlineMs:number;
+  workerCap:number;
+  logicalJobTarget:number;
+  baseDepth:number;
+  maxDepth:number;
+  lanes:number;
+  retention:number;
+  minSurvivors:number;
+  nodeBase:number;
+}
+
+// Serial search is now only the low-cost path and the safety fallback.
+// Every budget is intentionally well below the user-facing two-second ceiling.
 export const CPU_BUDGETS:Record<CpuLevel,CpuBudget>={
-  beginner:{maxDepth:1,timeMs:120,beginnerPool:6},
-  intermediate:{maxDepth:2,timeMs:400},
-  amateur:{maxDepth:3,timeMs:1200},
-  pro:{maxDepth:5,timeMs:3500},
-  title:{maxDepth:7,timeMs:8000},
+  beginner:{maxDepth:1,timeMs:90,beginnerPool:6},
+  intermediate:{maxDepth:2,timeMs:180},
+  amateur:{maxDepth:3,timeMs:360},
+  pro:{maxDepth:4,timeMs:500},
+  title:{maxDepth:5,timeMs:700},
+};
+
+// Difficulty is primarily created by how much parallel search density is packed
+// into the same short reply window, not by making the player wait longer.
+export const CPU_PARALLEL_PROFILES:Record<CpuLevel,CpuParallelProfile>={
+  beginner:{replyDeadlineMs:240,workerCap:1,logicalJobTarget:1,baseDepth:1,maxDepth:1,lanes:1,retention:1,minSurvivors:1,nodeBase:600},
+  intermediate:{replyDeadlineMs:650,workerCap:2,logicalJobTarget:12,baseDepth:1,maxDepth:3,lanes:1,retention:0.5,minSurvivors:2,nodeBase:900},
+  amateur:{replyDeadlineMs:1000,workerCap:3,logicalJobTarget:32,baseDepth:2,maxDepth:5,lanes:2,retention:0.5,minSurvivors:4,nodeBase:1400},
+  pro:{replyDeadlineMs:1450,workerCap:6,logicalJobTarget:96,baseDepth:2,maxDepth:7,lanes:3,retention:0.55,minSurvivors:6,nodeBase:2200},
+  title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:256,baseDepth:2,maxDepth:10,lanes:4,retention:0.65,minSurvivors:8,nodeBase:2800},
 };
 
 const values:Record<BoardKind,number>={
@@ -57,6 +80,38 @@ function moveOrderingScore(pos:Position,move:Move):number{
   if(move.promote)score+=500;
   if(move.drop)score+=50;
   return score;
+}
+
+export function sameCpuMove(a:Move,b:Move):boolean{
+  return a.to[0]===b.to[0]
+    &&a.to[1]===b.to[1]
+    &&a.from?.[0]===b.from?.[0]
+    &&a.from?.[1]===b.from?.[1]
+    &&a.drop===b.drop
+    &&!!a.promote===!!b.promote;
+}
+
+export interface FastRankedMove { move:Move; score:number }
+
+export function rankCpuMovesFast(pos:Position,materialEvaluator?:CpuMaterialEvaluator):FastRankedMove[]{
+  const perspective=pos.turn;
+  return legalMoves(pos)
+    .map(move=>{
+      const next=applyLegalMoveUnchecked(pos,move);
+      const score=staticEvaluation(next,perspective,materialEvaluator)+Math.trunc(moveOrderingScore(pos,move)/20);
+      return{move,score};
+    })
+    .sort((a,b)=>b.score-a.score);
+}
+
+export function chooseCpuFallbackMove(pos:Position,level:CpuLevel):Move|null{
+  const ranked=rankCpuMovesFast(pos);
+  if(ranked.length===0)return null;
+  if(level==='beginner'){
+    const count=Math.min(CPU_BUDGETS.beginner.beginnerPool??1,ranked.length);
+    return ranked[Math.floor(Math.random()*count)]!.move;
+  }
+  return ranked[0]!.move;
 }
 
 function repetitionScore(pos:Position,perspective:Side,plyFromRoot:number):number|null{
@@ -114,9 +169,47 @@ function alphaBeta(
 }
 
 export interface CpuSearchResult {
-  move: Move | null;
-  completedDepth: number;
-  nodesVisited: number;
+  move:Move|null;
+  completedDepth:number;
+  nodesVisited:number;
+}
+
+export interface CpuRootScoreResult {
+  score:number;
+  completedDepth:number;
+  nodesVisited:number;
+  complete:boolean;
+}
+
+export function scoreCpuRootMove(
+  pos:Position,
+  move:Move,
+  maxDepth:number,
+  timeMs:number,
+  materialEvaluator?:CpuMaterialEvaluator,
+):CpuRootScoreResult{
+  const legal=legalMoves(pos);
+  const verified=legal.find(candidate=>sameCpuMove(candidate,move));
+  if(!verified)throw new Error('CPU_ROOT_MOVE_ILLEGAL');
+  const perspective=pos.turn;
+  const next=applyLegalMoveUnchecked(pos,verified);
+  const state:SearchState={deadline:Date.now()+Math.max(10,timeMs),nodes:0};
+  let score=staticEvaluation(next,perspective,materialEvaluator);
+  let completedDepth=0;
+  let complete=true;
+  for(let depth=1;depth<=Math.max(1,maxDepth);depth++){
+    try{
+      const table=new Map<string,number>();
+      const current=alphaBeta(next,Math.max(0,depth-1),-Infinity,Infinity,perspective,1,table,state,materialEvaluator);
+      score=current;
+      completedDepth=depth;
+    }catch(error){
+      if(error!==TIMEOUT)throw error;
+      complete=false;
+      break;
+    }
+  }
+  return{score,completedDepth,nodesVisited:state.nodes,complete};
 }
 
 export function chooseCpuMove(pos:Position,level:CpuLevel,materialEvaluator?:CpuMaterialEvaluator):CpuSearchResult{
@@ -126,7 +219,7 @@ export function chooseCpuMove(pos:Position,level:CpuLevel,materialEvaluator?:Cpu
   const budget=CPU_BUDGETS[level];
   const state:SearchState={deadline:Date.now()+budget.timeMs,nodes:0};
   const perspective=pos.turn;
-  let bestMove=legal[0]!;
+  let bestMove=chooseCpuFallbackMove(pos,level)??legal[0]!;
   let completedDepth=0;
   let ranked:{move:Move;score:number}[]=[];
 
@@ -154,7 +247,6 @@ export function chooseCpuMove(pos:Position,level:CpuLevel,materialEvaluator?:Cpu
     }
   }
 
-  // Beginner deliberately varies among several reasonable moves; still pure algorithmic search.
   if(level==='beginner'&&ranked.length>1){
     const pool=ranked.slice(0,Math.min(budget.beginnerPool??1,ranked.length));
     bestMove=pool[Math.floor(Math.random()*pool.length)]!.move;
