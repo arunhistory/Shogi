@@ -89,6 +89,8 @@ async function expectUpgradeRejected(roomId,protocols,expectedStatus,requestOrig
   });
 }
 
+function hasPiece(state,side,kind){return state.position.board.flat().some(piece=>piece?.side===side&&piece.kind===kind);}
+
 async function main(){
   const health=await api('/health',{requestOrigin:null});
   assert.equal(health.response.status,200);
@@ -103,6 +105,9 @@ async function main(){
   assert.equal(created.response.status,200);
   assert.equal(created.data.seat,'sente');
   assert.equal(created.data.revision,0);
+  assert.equal(created.data.handicap,'even');
+  assert.equal(created.data.handicapSide,'gote');
+  assert.equal(created.data.order,'sente');
   assert.match(created.data.roomId,/^[A-Za-z0-9_-]{16,128}$/);
   assert.match(created.data.passcode,/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/);
   assert.ok(created.data.playerToken.length>=32);
@@ -149,6 +154,7 @@ async function main(){
   const senteState=await sente1.inbox.until(v=>v.type==='state');
   assert.equal(senteState.state.status,'playing');
   assert.equal(senteState.state.revision,1);
+  assert.ok(Number.isSafeInteger(senteState.state.startedAt));
   assert.equal(senteState.state.position.history.length,1,'online state must expose only the current canonical history entry');
 
   const gote=await openSocket(created.data.roomId,joined.data.playerToken);
@@ -213,6 +219,54 @@ async function main(){
 
   sente1.socket.terminate();
   sente2.socket.terminate();
+
+  const customCreateBody={requestId:'create-e2e-0100',handicap:'two',handicapSide:'sente',order:'gote'};
+  const customCreated=await api('/v1/rooms',{method:'POST',body:customCreateBody});
+  assert.equal(customCreated.response.status,200);
+  assert.equal(customCreated.data.seat,'gote','creator must be able to choose gote');
+  assert.equal(customCreated.data.handicap,'two');
+  assert.equal(customCreated.data.handicapSide,'sente');
+  assert.equal(customCreated.data.order,'gote');
+
+  const customJoined=await api('/v1/rooms/join',{method:'POST',body:{requestId:'join-e2e-0100',passcode:customCreated.data.passcode}});
+  assert.equal(customJoined.response.status,200);
+  assert.equal(customJoined.data.seat,'sente','guest must receive the remaining seat');
+  assert.equal(customJoined.data.handicap,'two');
+  assert.equal(customJoined.data.handicapSide,'sente');
+
+  const customGote=await openSocket(customCreated.data.roomId,customCreated.data.playerToken);
+  assert.equal((await customGote.inbox.until(v=>v.type==='authenticated')).seat,'gote');
+  const customGoteState=await customGote.inbox.until(v=>v.type==='state'&&v.state.status==='playing');
+  assert.equal(customGoteState.state.position.turn,'sente');
+  assert.equal(customGoteState.state.handicapSide,'sente');
+  assert.equal(customGoteState.state.order,'gote');
+  assert.ok(Number.isSafeInteger(customGoteState.state.startedAt));
+  assert.equal(hasPiece(customGoteState.state,'sente','rook'),false,'sente rook must be removed');
+  assert.equal(hasPiece(customGoteState.state,'sente','bishop'),false,'sente bishop must be removed');
+  assert.equal(hasPiece(customGoteState.state,'gote','rook'),true,'gote rook must remain');
+  assert.equal(hasPiece(customGoteState.state,'gote','bishop'),true,'gote bishop must remain');
+
+  const customSente=await openSocket(customCreated.data.roomId,customJoined.data.playerToken);
+  assert.equal((await customSente.inbox.until(v=>v.type==='authenticated')).seat,'sente');
+  await customSente.inbox.until(v=>v.type==='state'&&v.state.status==='playing');
+
+  const resignMessage={type:'resign',requestId:'resign-e2e-0100',expectedRevision:1};
+  customGote.socket.send(JSON.stringify(resignMessage));
+  const resigned=await customGote.inbox.until(v=>v.type==='state'&&v.state.status==='ended');
+  assert.equal(resigned.state.revision,2);
+  assert.equal(resigned.state.winner,'sente');
+  assert.equal(resigned.state.resultReason,'resignation');
+  assert.ok(Number.isSafeInteger(resigned.state.endedAt));
+  assert.ok(resigned.state.endedAt>=resigned.state.startedAt);
+  const peerResigned=await customSente.inbox.until(v=>v.type==='state'&&v.state.status==='ended');
+  assert.equal(peerResigned.state.winner,'sente');
+
+  customGote.socket.send(JSON.stringify(resignMessage));
+  const duplicateResign=await customGote.inbox.until(v=>v.type==='state'&&v.state.revision===2);
+  assert.equal(duplicateResign.state.resultReason,'resignation','duplicate resignation must not advance revision');
+
+  customGote.socket.terminate();
+  customSente.socket.terminate();
   console.log('Cloudflare authoritative room E2E: PASS');
 }
 
