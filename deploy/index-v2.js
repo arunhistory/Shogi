@@ -27,388 +27,6 @@ function handicapRule(handicap) {
 }
 __name(handicapRule, "handicapRule");
 
-// src/runtime/common.ts
-var jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
-var passcodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-var handicaps = new Set(HANDICAP_RULE_LIST.map((rule) => rule.id));
-var contentKeys = /* @__PURE__ */ new Set(["terms", "credits", "licenses"]);
-var roomIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
-var requestIdPattern = /^[A-Za-z0-9_-]{8,128}$/;
-function responseJson(value, status = 200, extra = {}) {
-  return new Response(JSON.stringify(value), { status, headers: { ...jsonHeaders, ...extra } });
-}
-__name(responseJson, "responseJson");
-function errorJson(code, status = 400, extra = {}) {
-  return responseJson({ ok: false, code }, status, extra);
-}
-__name(errorJson, "errorJson");
-function directoryStub(env) {
-  return env.DIRECTORY.get(env.DIRECTORY.idFromName("shogi-directory-v2"));
-}
-__name(directoryStub, "directoryStub");
-function contentStub(env) {
-  return env.CONTENT.get(env.CONTENT.idFromName("shogi-content-v1"));
-}
-__name(contentStub, "contentStub");
-function roomStub(env, roomId) {
-  return env.ROOMS.get(env.ROOMS.idFromName(roomId));
-}
-__name(roomStub, "roomStub");
-function randomToken(bytes) {
-  const data = new Uint8Array(bytes);
-  crypto.getRandomValues(data);
-  let binary = "";
-  for (const byte of data) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-__name(randomToken, "randomToken");
-function randomPasscode(length = 8) {
-  const data = new Uint8Array(length);
-  crypto.getRandomValues(data);
-  let out = "";
-  for (const byte of data) out += passcodeAlphabet[byte % passcodeAlphabet.length];
-  return out;
-}
-__name(randomPasscode, "randomPasscode");
-async function sha256(value) {
-  const bytes = new TextEncoder().encode(value);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-__name(sha256, "sha256");
-function safeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-__name(safeEqual, "safeEqual");
-async function readJson(request, maxBytes = 16384) {
-  const length = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > maxBytes) throw new Error("BODY_TOO_LARGE");
-  const text = await request.text();
-  if (text.length > maxBytes) throw new Error("BODY_TOO_LARGE");
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("INVALID_JSON");
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_JSON_OBJECT");
-  return value;
-}
-__name(readJson, "readJson");
-function requestId(value) {
-  if (typeof value !== "string" || !requestIdPattern.test(value)) throw new Error("INVALID_REQUEST_ID");
-  return value;
-}
-__name(requestId, "requestId");
-function parseHandicap(value) {
-  if (!isHandicap(value)) throw new Error("INVALID_HANDICAP");
-  return value;
-}
-__name(parseHandicap, "parseHandicap");
-function parseMove(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_MOVE");
-  const data = value;
-  const to = parseSquare(data.to);
-  const promote = data.promote === true;
-  if (data.drop !== void 0) {
-    if (promote) throw new Error("INVALID_MOVE");
-    if (typeof data.drop !== "string" || !["rook", "bishop", "gold", "silver", "knight", "lance", "pawn"].includes(data.drop)) throw new Error("INVALID_MOVE");
-    return { drop: data.drop, to };
-  }
-  const from = parseSquare(data.from);
-  return { from, to, ...promote ? { promote: true } : {} };
-}
-__name(parseMove, "parseMove");
-function parseSquare(value) {
-  if (!Array.isArray(value) || value.length !== 2) throw new Error("INVALID_SQUARE");
-  const y = Number(value[0]), x = Number(value[1]);
-  if (!Number.isInteger(y) || !Number.isInteger(x) || y < 0 || y > 8 || x < 0 || x > 8) throw new Error("INVALID_SQUARE");
-  return [y, x];
-}
-__name(parseSquare, "parseSquare");
-function moveFingerprint(move) {
-  if (move.drop) return `d:${move.drop}:${move.to[0]},${move.to[1]}`;
-  return `m:${move.from[0]},${move.from[1]}:${move.to[0]},${move.to[1]}:${move.promote ? 1 : 0}`;
-}
-__name(moveFingerprint, "moveFingerprint");
-function corsHeaders(request, env) {
-  const origin = request.headers.get("origin");
-  if (origin === env.APP_ORIGIN) {
-    return {
-      "access-control-allow-origin": origin,
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-      "access-control-allow-headers": "content-type",
-      "access-control-max-age": "600",
-      "vary": "Origin"
-    };
-  }
-  return {};
-}
-__name(corsHeaders, "corsHeaders");
-function hasExpectedOrigin(request, env) {
-  return request.headers.get("origin") === env.APP_ORIGIN;
-}
-__name(hasExpectedOrigin, "hasExpectedOrigin");
-function clientIp(request) {
-  return request.headers.get("cf-connecting-ip")?.trim() || "unknown";
-}
-__name(clientIp, "clientIp");
-function asInternalRequest(path, body, request) {
-  return new Request(`https://internal${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-client-ip": clientIp(request) },
-    body: JSON.stringify(body)
-  });
-}
-__name(asInternalRequest, "asInternalRequest");
-function validateAppUrl(value) {
-  if (typeof value !== "string") throw new Error("INVALID_APP_URL");
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("INVALID_APP_URL");
-  }
-  if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new Error("INVALID_APP_URL");
-  return url.toString();
-}
-__name(validateAppUrl, "validateAppUrl");
-function inviteUrl(appUrl, inviteToken) {
-  const url = new URL(appUrl);
-  url.searchParams.set("invite", inviteToken);
-  return url.toString();
-}
-__name(inviteUrl, "inviteUrl");
-
-// src/runtime/socket-auth.ts
-var websocketProtocol = "shogi-v1";
-var playerTokenPattern = /^[A-Za-z0-9_-]{32,128}$/;
-function websocketPlayerToken(headers) {
-  const raw = headers.get("sec-websocket-protocol") ?? "";
-  if (raw.length === 0 || raw.length > 512) return null;
-  const protocols = raw.split(",").map((value) => value.trim()).filter(Boolean);
-  if (protocols.length !== 2 || !protocols.includes(websocketProtocol)) return null;
-  const playerProtocols = protocols.filter((value) => value.startsWith("player."));
-  if (playerProtocols.length !== 1) return null;
-  const token = playerProtocols[0].slice("player.".length);
-  return playerTokenPattern.test(token) ? token : null;
-}
-__name(websocketPlayerToken, "websocketPlayerToken");
-
-// src/runtime/directory.ts
-import { DurableObject } from "cloudflare:workers";
-function encodeBase64Url(bytes) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-__name(encodeBase64Url, "encodeBase64Url");
-var ShogiDirectory = class extends DurableObject {
-  static {
-    __name(this, "ShogiDirectory");
-  }
-  gate = Promise.resolve();
-  identityKey = null;
-  constructor(ctx, env) {
-    super(ctx, env);
-  }
-  async fetch(request) {
-    if (request.method !== "POST") return errorJson("METHOD_NOT_ALLOWED", 405);
-    return this.exclusive(async () => {
-      const url = new URL(request.url);
-      try {
-        const body = await readJson(request);
-        const ip = request.headers.get("x-client-ip") ?? "unknown";
-        if (url.pathname === "/create") return await this.create(body, ip);
-        if (url.pathname === "/join-passcode") return await this.join(body, ip, "passcode");
-        if (url.pathname === "/join-invite") return await this.join(body, ip, "invite");
-        return errorJson("NOT_FOUND", 404);
-      } catch (error) {
-        return errorJson(error instanceof Error ? error.message : "INVALID_REQUEST", 400);
-      }
-    });
-  }
-  async exclusive(operation) {
-    const previous = this.gate;
-    let release;
-    this.gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-  async getIdentityKey() {
-    if (this.identityKey) return this.identityKey;
-    let secret = await this.ctx.storage.get("identity-secret:v1");
-    if (!secret) {
-      secret = randomToken(32);
-      await this.ctx.storage.put("identity-secret:v1", secret);
-    }
-    this.identityKey = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"]
-    );
-    return this.identityKey;
-  }
-  async derivePlayerToken(scope) {
-    const signature = new Uint8Array(await crypto.subtle.sign("HMAC", await this.getIdentityKey(), new TextEncoder().encode(scope)));
-    return encodeBase64Url(signature);
-  }
-  async enforceRateLimit(ip, scope) {
-    const bucket = Math.floor(Date.now() / 6e4);
-    const ipHash = await sha256(ip);
-    const key = `rate:${scope}:${ipHash}:${bucket}`;
-    const count = await this.ctx.storage.get(key) ?? 0;
-    const limit = scope === "create" ? 12 : 40;
-    if (count >= limit) throw new Error("RATE_LIMITED");
-    await this.ctx.storage.put(key, count + 1);
-    await this.ctx.storage.delete(`rate:${scope}:${ipHash}:${bucket - 2}`);
-  }
-  async allocatePasscode(opKey) {
-    for (let attempt = 0; attempt < 32; attempt++) {
-      const candidate = randomPasscode();
-      const [mapped, reserved] = await Promise.all([
-        this.ctx.storage.get(`pass:${candidate}`),
-        this.ctx.storage.get(`reserve-pass:${candidate}`)
-      ]);
-      if (!mapped && !reserved) {
-        await this.ctx.storage.put(`reserve-pass:${candidate}`, opKey);
-        return candidate;
-      }
-    }
-    throw new Error("PASSCODE_ALLOCATION_FAILED");
-  }
-  async create(body, ip) {
-    const id = requestId(body.requestId);
-    const handicap = parseHandicap(body.handicap);
-    const appUrl = validateAppUrl(body.appUrl);
-    const opKey = `create:${id}`;
-    const existing = await this.ctx.storage.get(opKey);
-    if (existing) {
-      if (existing.kind !== "create" || existing.requestId !== id || existing.handicap !== handicap || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
-      return await this.resumeCreate(opKey, existing);
-    }
-    await this.enforceRateLimit(ip, "create");
-    const passcode = await this.allocatePasscode(opKey);
-    const operation = {
-      kind: "create",
-      phase: "pending",
-      requestId: id,
-      handicap,
-      appUrl,
-      roomId: randomToken(18),
-      inviteToken: randomToken(24),
-      passcode
-    };
-    await this.ctx.storage.put(opKey, operation);
-    return await this.resumeCreate(opKey, operation);
-  }
-  async resumeCreate(opKey, operation) {
-    const playerToken = await this.derivePlayerToken(`sente:${operation.requestId}:${operation.roomId}`);
-    const creatorTokenHash = await sha256(playerToken);
-    const init = await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request("https://internal/init", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        roomId: operation.roomId,
-        handicap: operation.handicap,
-        creatorTokenHash,
-        creationRequestId: operation.requestId
-      })
-    }));
-    if (!init.ok) return new Response(init.body, { status: init.status, headers: jsonHeaders });
-    const room = await init.json();
-    const done = { ...operation, phase: "done" };
-    await this.ctx.storage.put({
-      [`pass:${operation.passcode}`]: operation.roomId,
-      [`invite:${operation.inviteToken}`]: operation.roomId,
-      [`room-pass:${operation.roomId}`]: operation.passcode,
-      [`room-invite:${operation.roomId}`]: operation.inviteToken,
-      [opKey]: done
-    });
-    await this.ctx.storage.delete(`reserve-pass:${operation.passcode}`);
-    const result = {
-      roomId: operation.roomId,
-      inviteUrl: inviteUrl(operation.appUrl, operation.inviteToken),
-      passcode: operation.passcode,
-      playerToken,
-      seat: "sente",
-      revision: room.revision
-    };
-    return responseJson(result);
-  }
-  async join(body, ip, method) {
-    const id = requestId(body.requestId);
-    const appUrl = validateAppUrl(body.appUrl);
-    const credential = method === "passcode" ? String(body.passcode ?? "").trim().toUpperCase() : String(body.inviteToken ?? "").trim();
-    if (method === "passcode" && (credential.length !== 8 || ![...credential].every((char) => passcodeAlphabet.includes(char)))) throw new Error("INVALID_PASSCODE");
-    if (method === "invite" && !/^[A-Za-z0-9_-]{24,128}$/.test(credential)) throw new Error("INVALID_INVITE");
-    const opKey = `join:${method}:${id}`;
-    const existing = await this.ctx.storage.get(opKey);
-    if (existing) {
-      if (existing.kind !== "join" || existing.method !== method || existing.requestId !== id || existing.credential !== credential || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
-      return await this.resumeJoin(opKey, existing);
-    }
-    await this.enforceRateLimit(ip, "join");
-    const lookup = method === "passcode" ? `pass:${credential}` : `invite:${credential}`;
-    const roomId = await this.ctx.storage.get(lookup);
-    if (!roomId) return errorJson(method === "passcode" ? "PASSCODE_NOT_FOUND" : "INVITE_NOT_FOUND", 404);
-    const [passcode, inviteToken] = await Promise.all([
-      this.ctx.storage.get(`room-pass:${roomId}`),
-      this.ctx.storage.get(`room-invite:${roomId}`)
-    ]);
-    if (!passcode || !inviteToken) throw new Error("ROOM_MAPPING_MISSING");
-    const operation = {
-      kind: "join",
-      phase: "pending",
-      method,
-      requestId: id,
-      credential,
-      appUrl,
-      roomId,
-      passcode,
-      inviteToken
-    };
-    await this.ctx.storage.put(opKey, operation);
-    return await this.resumeJoin(opKey, operation);
-  }
-  async resumeJoin(opKey, operation) {
-    const joinRequestId = `${operation.method}:${operation.requestId}`;
-    const playerToken = await this.derivePlayerToken(`gote:${joinRequestId}:${operation.roomId}`);
-    const playerTokenHash = await sha256(playerToken);
-    const joined = await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request("https://internal/join", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ playerTokenHash, joinRequestId })
-    }));
-    if (!joined.ok) return new Response(joined.body, { status: joined.status, headers: jsonHeaders });
-    const room = await joined.json();
-    await this.ctx.storage.put(opKey, { ...operation, phase: "done" });
-    const result = {
-      roomId: operation.roomId,
-      inviteUrl: inviteUrl(operation.appUrl, operation.inviteToken),
-      passcode: operation.passcode,
-      playerToken,
-      seat: "gote",
-      revision: room.revision
-    };
-    return responseJson(result);
-  }
-};
-
-// src/runtime/room.ts
-import { DurableObject as DurableObject2 } from "cloudflare:workers";
-
 // ../src/game/position-key.ts
 var version = "v1";
 var boardKinds = [
@@ -679,6 +297,480 @@ function gameOutcome(pos) {
 }
 __name(gameOutcome, "gameOutcome");
 
+// ../src/game/setup.ts
+function isOrderPreference(value) {
+  return value === "random" || value === "sente" || value === "gote";
+}
+__name(isOrderPreference, "isOrderPreference");
+function isSide(value) {
+  return value === "sente" || value === "gote";
+}
+__name(isSide, "isSide");
+function configuredInitialPosition(handicap = "even", handicapSide = "gote") {
+  const position = initialPosition("even");
+  if (handicap !== "even") {
+    const remove = /* @__PURE__ */ __name((kind) => {
+      for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
+        const piece = position.board[y][x];
+        if (piece?.side === handicapSide && piece.kind === kind) {
+          position.board[y][x] = null;
+          return;
+        }
+      }
+    }, "remove");
+    for (const kind of handicapRule(handicap).removedFromGote) remove(kind);
+  }
+  position.turn = "sente";
+  position.ply = 0;
+  position.history = [];
+  position.history.push({ key: positionKey(position), mover: null, gaveCheck: false });
+  return position;
+}
+__name(configuredInitialPosition, "configuredInitialPosition");
+
+// src/runtime/common.ts
+var jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+var passcodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+var handicaps = new Set(HANDICAP_RULE_LIST.map((rule) => rule.id));
+var contentKeys = /* @__PURE__ */ new Set(["terms", "credits", "licenses"]);
+var roomIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
+var requestIdPattern = /^[A-Za-z0-9_-]{8,128}$/;
+function responseJson(value, status = 200, extra = {}) {
+  return new Response(JSON.stringify(value), { status, headers: { ...jsonHeaders, ...extra } });
+}
+__name(responseJson, "responseJson");
+function errorJson(code, status = 400, extra = {}) {
+  return responseJson({ ok: false, code }, status, extra);
+}
+__name(errorJson, "errorJson");
+function directoryStub(env) {
+  return env.DIRECTORY.get(env.DIRECTORY.idFromName("shogi-directory-v2"));
+}
+__name(directoryStub, "directoryStub");
+function contentStub(env) {
+  return env.CONTENT.get(env.CONTENT.idFromName("shogi-content-v1"));
+}
+__name(contentStub, "contentStub");
+function roomStub(env, roomId) {
+  return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+}
+__name(roomStub, "roomStub");
+function randomToken(bytes) {
+  const data = new Uint8Array(bytes);
+  crypto.getRandomValues(data);
+  let binary = "";
+  for (const byte of data) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(randomToken, "randomToken");
+function randomPasscode(length = 8) {
+  const data = new Uint8Array(length);
+  crypto.getRandomValues(data);
+  let out = "";
+  for (const byte of data) out += passcodeAlphabet[byte % passcodeAlphabet.length];
+  return out;
+}
+__name(randomPasscode, "randomPasscode");
+function randomSide() {
+  const data = new Uint8Array(1);
+  crypto.getRandomValues(data);
+  return (data[0] & 1) === 0 ? "sente" : "gote";
+}
+__name(randomSide, "randomSide");
+function oppositeSide(side) {
+  return side === "sente" ? "gote" : "sente";
+}
+__name(oppositeSide, "oppositeSide");
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+__name(sha256, "sha256");
+function safeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+__name(safeEqual, "safeEqual");
+async function readJson(request, maxBytes = 16384) {
+  const length = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(length) && length > maxBytes) throw new Error("BODY_TOO_LARGE");
+  const text = await request.text();
+  if (text.length > maxBytes) throw new Error("BODY_TOO_LARGE");
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("INVALID_JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_JSON_OBJECT");
+  return value;
+}
+__name(readJson, "readJson");
+function requestId(value) {
+  if (typeof value !== "string" || !requestIdPattern.test(value)) throw new Error("INVALID_REQUEST_ID");
+  return value;
+}
+__name(requestId, "requestId");
+function parseHandicap(value) {
+  if (!isHandicap(value)) throw new Error("INVALID_HANDICAP");
+  return value;
+}
+__name(parseHandicap, "parseHandicap");
+function parseSide(value) {
+  if (!isSide(value)) throw new Error("INVALID_SIDE");
+  return value;
+}
+__name(parseSide, "parseSide");
+function parseOrder(value) {
+  if (!isOrderPreference(value)) throw new Error("INVALID_ORDER");
+  return value;
+}
+__name(parseOrder, "parseOrder");
+function normalizeHandicapSide(state) {
+  return isSide(state.handicapSide) ? state.handicapSide : "gote";
+}
+__name(normalizeHandicapSide, "normalizeHandicapSide");
+function normalizeOrder(state) {
+  return isOrderPreference(state.order) ? state.order : "sente";
+}
+__name(normalizeOrder, "normalizeOrder");
+function normalizeCreatorSide(state) {
+  return isSide(state.creatorSide) ? state.creatorSide : "sente";
+}
+__name(normalizeCreatorSide, "normalizeCreatorSide");
+function parseMove(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_MOVE");
+  const data = value;
+  const to = parseSquare(data.to);
+  const promote = data.promote === true;
+  if (data.drop !== void 0) {
+    if (promote) throw new Error("INVALID_MOVE");
+    if (typeof data.drop !== "string" || !["rook", "bishop", "gold", "silver", "knight", "lance", "pawn"].includes(data.drop)) throw new Error("INVALID_MOVE");
+    return { drop: data.drop, to };
+  }
+  const from = parseSquare(data.from);
+  return { from, to, ...promote ? { promote: true } : {} };
+}
+__name(parseMove, "parseMove");
+function parseSquare(value) {
+  if (!Array.isArray(value) || value.length !== 2) throw new Error("INVALID_SQUARE");
+  const y = Number(value[0]), x = Number(value[1]);
+  if (!Number.isInteger(y) || !Number.isInteger(x) || y < 0 || y > 8 || x < 0 || x > 8) throw new Error("INVALID_SQUARE");
+  return [y, x];
+}
+__name(parseSquare, "parseSquare");
+function moveFingerprint(move) {
+  if (move.drop) return `d:${move.drop}:${move.to[0]},${move.to[1]}`;
+  return `m:${move.from[0]},${move.from[1]}:${move.to[0]},${move.to[1]}:${move.promote ? 1 : 0}`;
+}
+__name(moveFingerprint, "moveFingerprint");
+function corsHeaders(request, env) {
+  const origin = request.headers.get("origin");
+  if (origin === env.APP_ORIGIN) {
+    return {
+      "access-control-allow-origin": origin,
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "content-type",
+      "access-control-max-age": "600",
+      "vary": "Origin"
+    };
+  }
+  return {};
+}
+__name(corsHeaders, "corsHeaders");
+function hasExpectedOrigin(request, env) {
+  return request.headers.get("origin") === env.APP_ORIGIN;
+}
+__name(hasExpectedOrigin, "hasExpectedOrigin");
+function clientIp(request) {
+  return request.headers.get("cf-connecting-ip")?.trim() || "unknown";
+}
+__name(clientIp, "clientIp");
+function asInternalRequest(path, body, request) {
+  return new Request(`https://internal${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-client-ip": clientIp(request) },
+    body: JSON.stringify(body)
+  });
+}
+__name(asInternalRequest, "asInternalRequest");
+function validateAppUrl(value) {
+  if (typeof value !== "string") throw new Error("INVALID_APP_URL");
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("INVALID_APP_URL");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new Error("INVALID_APP_URL");
+  return url.toString();
+}
+__name(validateAppUrl, "validateAppUrl");
+function inviteUrl(appUrl, inviteToken) {
+  const url = new URL(appUrl);
+  url.searchParams.set("invite", inviteToken);
+  return url.toString();
+}
+__name(inviteUrl, "inviteUrl");
+
+// src/runtime/socket-auth.ts
+var websocketProtocol = "shogi-v1";
+var playerTokenPattern = /^[A-Za-z0-9_-]{32,128}$/;
+function websocketPlayerToken(headers) {
+  const raw = headers.get("sec-websocket-protocol") ?? "";
+  if (raw.length === 0 || raw.length > 512) return null;
+  const protocols = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  if (protocols.length !== 2 || !protocols.includes(websocketProtocol)) return null;
+  const playerProtocols = protocols.filter((value) => value.startsWith("player."));
+  if (playerProtocols.length !== 1) return null;
+  const token = playerProtocols[0].slice("player.".length);
+  return playerTokenPattern.test(token) ? token : null;
+}
+__name(websocketPlayerToken, "websocketPlayerToken");
+
+// src/runtime/directory.ts
+import { DurableObject } from "cloudflare:workers";
+function encodeBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(encodeBase64Url, "encodeBase64Url");
+function normalizeCreateOperation(operation) {
+  const stored = operation;
+  return {
+    ...operation,
+    handicapSide: isSide(stored.handicapSide) ? stored.handicapSide : "gote",
+    order: isOrderPreference(stored.order) ? stored.order : "sente",
+    creatorSide: isSide(stored.creatorSide) ? stored.creatorSide : "sente"
+  };
+}
+__name(normalizeCreateOperation, "normalizeCreateOperation");
+var ShogiDirectory = class extends DurableObject {
+  static {
+    __name(this, "ShogiDirectory");
+  }
+  gate = Promise.resolve();
+  identityKey = null;
+  constructor(ctx, env) {
+    super(ctx, env);
+  }
+  async fetch(request) {
+    if (request.method !== "POST") return errorJson("METHOD_NOT_ALLOWED", 405);
+    return this.exclusive(async () => {
+      const url = new URL(request.url);
+      try {
+        const body = await readJson(request);
+        const ip = request.headers.get("x-client-ip") ?? "unknown";
+        if (url.pathname === "/create") return await this.create(body, ip);
+        if (url.pathname === "/join-passcode") return await this.join(body, ip, "passcode");
+        if (url.pathname === "/join-invite") return await this.join(body, ip, "invite");
+        return errorJson("NOT_FOUND", 404);
+      } catch (error) {
+        return errorJson(error instanceof Error ? error.message : "INVALID_REQUEST", 400);
+      }
+    });
+  }
+  async exclusive(operation) {
+    const previous = this.gate;
+    let release;
+    this.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+  async getIdentityKey() {
+    if (this.identityKey) return this.identityKey;
+    let secret = await this.ctx.storage.get("identity-secret:v1");
+    if (!secret) {
+      secret = randomToken(32);
+      await this.ctx.storage.put("identity-secret:v1", secret);
+    }
+    this.identityKey = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    return this.identityKey;
+  }
+  async derivePlayerToken(scope) {
+    const signature = new Uint8Array(await crypto.subtle.sign("HMAC", await this.getIdentityKey(), new TextEncoder().encode(scope)));
+    return encodeBase64Url(signature);
+  }
+  async enforceRateLimit(ip, scope) {
+    const bucket = Math.floor(Date.now() / 6e4);
+    const ipHash = await sha256(ip);
+    const key = `rate:${scope}:${ipHash}:${bucket}`;
+    const count = await this.ctx.storage.get(key) ?? 0;
+    const limit = scope === "create" ? 12 : 40;
+    if (count >= limit) throw new Error("RATE_LIMITED");
+    await this.ctx.storage.put(key, count + 1);
+    await this.ctx.storage.delete(`rate:${scope}:${ipHash}:${bucket - 2}`);
+  }
+  async allocatePasscode(opKey) {
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const candidate = randomPasscode();
+      const [mapped, reserved] = await Promise.all([
+        this.ctx.storage.get(`pass:${candidate}`),
+        this.ctx.storage.get(`reserve-pass:${candidate}`)
+      ]);
+      if (!mapped && !reserved) {
+        await this.ctx.storage.put(`reserve-pass:${candidate}`, opKey);
+        return candidate;
+      }
+    }
+    throw new Error("PASSCODE_ALLOCATION_FAILED");
+  }
+  async create(body, ip) {
+    const id = requestId(body.requestId);
+    const handicap = parseHandicap(body.handicap);
+    const handicapSide = body.handicapSide === void 0 ? "gote" : parseSide(body.handicapSide);
+    const order = body.order === void 0 ? "sente" : parseOrder(body.order);
+    const appUrl = validateAppUrl(body.appUrl);
+    const opKey = `create:${id}`;
+    const stored = await this.ctx.storage.get(opKey);
+    if (stored) {
+      const existing = normalizeCreateOperation(stored);
+      if (existing.kind !== "create" || existing.requestId !== id || existing.handicap !== handicap || existing.handicapSide !== handicapSide || existing.order !== order || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
+      return await this.resumeCreate(opKey, existing);
+    }
+    await this.enforceRateLimit(ip, "create");
+    const passcode = await this.allocatePasscode(opKey);
+    const creatorSide = order === "random" ? randomSide() : order;
+    const operation = {
+      kind: "create",
+      phase: "pending",
+      requestId: id,
+      handicap,
+      handicapSide,
+      order,
+      creatorSide,
+      appUrl,
+      roomId: randomToken(18),
+      inviteToken: randomToken(24),
+      passcode
+    };
+    await this.ctx.storage.put(opKey, operation);
+    return await this.resumeCreate(opKey, operation);
+  }
+  async resumeCreate(opKey, rawOperation) {
+    const operation = normalizeCreateOperation(rawOperation);
+    const legacyIdentity = !isSide(rawOperation.creatorSide);
+    const tokenScope = legacyIdentity ? `sente:${operation.requestId}:${operation.roomId}` : `creator:${operation.requestId}:${operation.roomId}`;
+    const playerToken = await this.derivePlayerToken(tokenScope);
+    const creatorTokenHash = await sha256(playerToken);
+    const init = await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request("https://internal/init", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        roomId: operation.roomId,
+        handicap: operation.handicap,
+        handicapSide: operation.handicapSide,
+        order: operation.order,
+        creatorSide: operation.creatorSide,
+        creatorTokenHash,
+        creationRequestId: operation.requestId
+      })
+    }));
+    if (!init.ok) return new Response(init.body, { status: init.status, headers: jsonHeaders });
+    const room = await init.json();
+    const done = { ...operation, phase: "done" };
+    await this.ctx.storage.put({
+      [`pass:${operation.passcode}`]: operation.roomId,
+      [`invite:${operation.inviteToken}`]: operation.roomId,
+      [`room-pass:${operation.roomId}`]: operation.passcode,
+      [`room-invite:${operation.roomId}`]: operation.inviteToken,
+      [opKey]: done
+    });
+    await this.ctx.storage.delete(`reserve-pass:${operation.passcode}`);
+    const result = {
+      roomId: operation.roomId,
+      inviteUrl: inviteUrl(operation.appUrl, operation.inviteToken),
+      passcode: operation.passcode,
+      playerToken,
+      seat: operation.creatorSide,
+      revision: room.revision,
+      handicap: operation.handicap,
+      handicapSide: operation.handicapSide,
+      order: operation.order
+    };
+    return responseJson(result);
+  }
+  async join(body, ip, method) {
+    const id = requestId(body.requestId);
+    const appUrl = validateAppUrl(body.appUrl);
+    const credential = method === "passcode" ? String(body.passcode ?? "").trim().toUpperCase() : String(body.inviteToken ?? "").trim();
+    if (method === "passcode" && (credential.length !== 8 || ![...credential].every((char) => passcodeAlphabet.includes(char)))) throw new Error("INVALID_PASSCODE");
+    if (method === "invite" && !/^[A-Za-z0-9_-]{24,128}$/.test(credential)) throw new Error("INVALID_INVITE");
+    const opKey = `join:${method}:${id}`;
+    const existing = await this.ctx.storage.get(opKey);
+    if (existing) {
+      if (existing.kind !== "join" || existing.method !== method || existing.requestId !== id || existing.credential !== credential || existing.appUrl !== appUrl) return errorJson("REQUEST_ID_CONFLICT", 409);
+      return await this.resumeJoin(opKey, existing);
+    }
+    await this.enforceRateLimit(ip, "join");
+    const lookup = method === "passcode" ? `pass:${credential}` : `invite:${credential}`;
+    const roomId = await this.ctx.storage.get(lookup);
+    if (!roomId) return errorJson(method === "passcode" ? "PASSCODE_NOT_FOUND" : "INVITE_NOT_FOUND", 404);
+    const [passcode, inviteToken] = await Promise.all([
+      this.ctx.storage.get(`room-pass:${roomId}`),
+      this.ctx.storage.get(`room-invite:${roomId}`)
+    ]);
+    if (!passcode || !inviteToken) throw new Error("ROOM_MAPPING_MISSING");
+    const operation = {
+      kind: "join",
+      phase: "pending",
+      method,
+      requestId: id,
+      credential,
+      appUrl,
+      roomId,
+      passcode,
+      inviteToken
+    };
+    await this.ctx.storage.put(opKey, operation);
+    return await this.resumeJoin(opKey, operation);
+  }
+  async resumeJoin(opKey, operation) {
+    const joinRequestId = `${operation.method}:${operation.requestId}`;
+    const playerToken = await this.derivePlayerToken(`guest:${joinRequestId}:${operation.roomId}`);
+    const playerTokenHash = await sha256(playerToken);
+    const joined = await this.env.ROOMS.get(this.env.ROOMS.idFromName(operation.roomId)).fetch(new Request("https://internal/join", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ playerTokenHash, joinRequestId })
+    }));
+    if (!joined.ok) return new Response(joined.body, { status: joined.status, headers: jsonHeaders });
+    const room = await joined.json();
+    await this.ctx.storage.put(opKey, { ...operation, phase: "done" });
+    const result = {
+      roomId: operation.roomId,
+      inviteUrl: inviteUrl(operation.appUrl, operation.inviteToken),
+      passcode: operation.passcode,
+      playerToken,
+      seat: room.seat,
+      revision: room.revision,
+      handicap: room.handicap,
+      handicapSide: room.handicapSide,
+      order: room.order
+    };
+    return responseJson(result);
+  }
+};
+
+// src/runtime/room.ts
+import { DurableObject as DurableObject2 } from "cloudflare:workers";
+
 // src/runtime/wasm-engine.ts
 import shogiWasmModule from "./a38fd83017f36fb516b1a9bbfceac3a1ab3705a1-shogi_engine.wasm";
 var POSITION_MAGIC = 1397245769;
@@ -924,19 +1016,29 @@ var ShogiRoom = class extends DurableObject2 {
     const creationRequestId = typeof body.creationRequestId === "string" ? body.creationRequestId : "";
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(roomId) || !/^[a-f0-9]{64}$/.test(creatorTokenHash) || !requestIdPattern.test(creationRequestId)) return errorJson("INVALID_ROOM_INIT", 400);
     const handicap = parseHandicap(body.handicap);
+    const handicapSide = body.handicapSide === void 0 ? "gote" : parseSide(body.handicapSide);
+    const order = body.order === void 0 ? "sente" : parseOrder(body.order);
+    const creatorSide = body.creatorSide === void 0 ? "sente" : parseSide(body.creatorSide);
     const existing = await this.ctx.storage.get("state");
     if (existing) {
-      if (existing.roomId === roomId && existing.handicap === handicap && existing.creationRequestId === creationRequestId && !!existing.players.sente && safeEqual(existing.players.sente, creatorTokenHash)) return responseJson({ ok: true, revision: existing.revision });
+      const existingCreator = normalizeCreatorSide(existing);
+      const existingHash = existing.players[existingCreator];
+      if (existing.roomId === roomId && existing.handicap === handicap && normalizeHandicapSide(existing) === handicapSide && normalizeOrder(existing) === order && existingCreator === creatorSide && existing.creationRequestId === creationRequestId && !!existingHash && safeEqual(existingHash, creatorTokenHash)) return responseJson({ ok: true, revision: existing.revision });
       return errorJson("ROOM_ALREADY_INITIALIZED", 409);
     }
+    const players = { sente: null, gote: null };
+    players[creatorSide] = creatorTokenHash;
     const state = {
       roomId,
       handicap,
+      handicapSide,
+      order,
+      creatorSide,
       creationRequestId,
       revision: 0,
       status: "waiting",
-      position: initialPosition(handicap),
-      players: { sente: creatorTokenHash, gote: null },
+      position: configuredInitialPosition(handicap, handicapSide),
+      players,
       processed: { sente: {}, gote: {} }
     };
     await this.ctx.storage.put("state", state);
@@ -949,21 +1051,38 @@ var ShogiRoom = class extends DurableObject2 {
     if (!/^[a-f0-9]{64}$/.test(tokenHash) || !joinRequestPattern.test(joinRequestId)) return errorJson("INVALID_PLAYER_TOKEN", 400);
     const state = await this.ctx.storage.get("state");
     if (!state) return errorJson("ROOM_NOT_FOUND", 404);
-    if (state.players.gote) {
-      if (state.goteJoinRequestId === joinRequestId && safeEqual(state.players.gote, tokenHash)) return responseJson({ ok: true, revision: state.revision });
-      return errorJson("ROOM_FULL", 409);
+    const existingSeat = state.players.sente && safeEqual(state.players.sente, tokenHash) ? "sente" : state.players.gote && safeEqual(state.players.gote, tokenHash) ? "gote" : null;
+    if (existingSeat) {
+      const sameRequest = state.joinRequestId === joinRequestId || existingSeat === "gote" && state.goteJoinRequestId === joinRequestId;
+      if (sameRequest) return this.joinResponse(state, existingSeat);
+      return errorJson("PLAYER_ALREADY_ASSIGNED", 409);
     }
+    if (state.players.sente && state.players.gote) return errorJson("ROOM_FULL", 409);
     if (state.status !== "waiting") return errorJson("ROOM_NOT_JOINABLE", 409);
+    const seat = state.players.sente ? "gote" : "sente";
+    const nextPlayers = { ...state.players, [seat]: tokenHash };
     const next = {
       ...state,
-      players: { ...state.players, gote: tokenHash },
-      goteJoinRequestId: joinRequestId,
+      players: nextPlayers,
+      joinRequestId,
+      ...seat === "gote" ? { goteJoinRequestId: joinRequestId } : {},
       status: "playing",
+      startedAt: Date.now(),
       revision: state.revision + 1
     };
     await this.ctx.storage.put("state", next);
     this.broadcastState(next);
-    return responseJson({ ok: true, revision: next.revision });
+    return this.joinResponse(next, seat);
+  }
+  joinResponse(state, seat) {
+    return responseJson({
+      ok: true,
+      revision: state.revision,
+      seat,
+      handicap: state.handicap,
+      handicapSide: normalizeHandicapSide(state),
+      order: normalizeOrder(state)
+    });
   }
   async handleSocketMessage(socket, message) {
     if (typeof message !== "string" || message.length > 32768) {
@@ -1013,7 +1132,7 @@ var ShogiRoom = class extends DurableObject2 {
       this.sendState(socket, state);
       return;
     }
-    if (data.type !== "move") {
+    if (data.type !== "move" && data.type !== "resign") {
       this.send(socket, { type: "error", code: "UNKNOWN_MESSAGE" });
       return;
     }
@@ -1023,14 +1142,17 @@ var ShogiRoom = class extends DurableObject2 {
       this.reject(socket, id, "INVALID_REQUEST_ID", state.revision);
       return;
     }
-    let move;
-    try {
-      move = parseMove(data.move);
-    } catch {
-      this.reject(socket, id, "INVALID_MOVE", state.revision);
-      return;
-    }
-    const fingerprint = moveFingerprint(move);
+    let fingerprint;
+    let move = null;
+    if (data.type === "move") {
+      try {
+        move = parseMove(data.move);
+      } catch {
+        this.reject(socket, id, "INVALID_MOVE", state.revision);
+        return;
+      }
+      fingerprint = moveFingerprint(move);
+    } else fingerprint = "resign";
     const prior = state.processed[seat][id];
     if (prior !== void 0) {
       if (prior === fingerprint) this.sendState(socket, state);
@@ -1041,13 +1163,28 @@ var ShogiRoom = class extends DurableObject2 {
       this.reject(socket, id, "GAME_NOT_PLAYING", state.revision);
       return;
     }
-    if (state.position.turn !== seat) {
-      this.reject(socket, id, "NOT_YOUR_TURN", state.revision);
-      return;
-    }
     const expectedRevision = Number(data.expectedRevision);
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== state.revision) {
       this.reject(socket, id, "STALE_REVISION", state.revision);
+      return;
+    }
+    const processed = { ...state.processed[seat], [id]: fingerprint };
+    if (data.type === "resign") {
+      const next2 = {
+        ...state,
+        status: "ended",
+        winner: oppositeSide(seat),
+        resultReason: "resignation",
+        endedAt: Date.now(),
+        revision: state.revision + 1,
+        processed: { ...state.processed, [seat]: processed }
+      };
+      await this.ctx.storage.put("state", next2);
+      this.broadcastState(next2);
+      return;
+    }
+    if (state.position.turn !== seat) {
+      this.reject(socket, id, "NOT_YOUR_TURN", state.revision);
       return;
     }
     const validated = validateMoveWithWasm(state.position, move);
@@ -1056,11 +1193,11 @@ var ShogiRoom = class extends DurableObject2 {
       return;
     }
     const { position, outcome } = validated;
-    const processed = { ...state.processed[seat], [id]: fingerprint };
     const terminal = outcome.ended ? {
       status: "ended",
       ..."winner" in outcome ? { winner: outcome.winner } : {},
-      resultReason: outcome.reason
+      resultReason: outcome.reason,
+      endedAt: Date.now()
     } : { status: "playing" };
     const next = {
       ...state,
@@ -1093,6 +1230,11 @@ var ShogiRoom = class extends DurableObject2 {
       position: clientPosition,
       status: state.status,
       connections,
+      handicap: state.handicap,
+      handicapSide: normalizeHandicapSide(state),
+      order: normalizeOrder(state),
+      ...state.startedAt ? { startedAt: state.startedAt } : {},
+      ...state.endedAt ? { endedAt: state.endedAt } : {},
       ...state.winner ? { winner: state.winner } : {},
       ...state.resultReason ? { resultReason: state.resultReason } : {}
     };
@@ -1212,6 +1354,8 @@ async function workerFetch(request, env) {
       const result = await directoryStub(env).fetch(asInternalRequest("/create", {
         requestId: requestId(body.requestId),
         handicap: body.handicap,
+        handicapSide: body.handicapSide,
+        order: body.order,
         appUrl: env.APP_URL
       }, request));
       return new Response(result.body, { status: result.status, headers: { ...jsonHeaders, ...cors } });

@@ -1,12 +1,12 @@
 {
   "version": 2,
   "service": "shogi-system",
-  "githubCommit": "296472d7320f10397380513ba446580673e7d6d1",
+  "githubCommit": "ac7af081e2a0950b59eacb9333fcde85f852fcf1",
   "mainModule": {
     "name": "index-v2.js",
     "url": "https://arunhistory.github.io/Shogi/deploy/index-v2.js",
-    "sha256": "164ae43280e7499cad2502b1b18a869c7057baf6259dc97f1ef25a7ec8d89ed3",
-    "bytes": 52703,
+    "sha256": "991c5b07f0d50f6427fe1b2d1f85022bbf43521ce0ea47001d6997c8d44dcab0",
+    "bytes": 58436,
     "contentType": "application/javascript+module"
   },
   "modules": [
