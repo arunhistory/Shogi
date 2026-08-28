@@ -1,4 +1,5 @@
 import { encodePositionKey } from './position-key';
+import { handicapRule } from './handicaps';
 import type {
   Board,
   BoardKind,
@@ -24,7 +25,7 @@ export const emptyHands=():Hands=>({
 
 const p=(side:Side,kind:BoardKind):Piece=>({side,kind});
 const enemy=(s:Side):Side=>s==='sente'?'gote':'sente';
-const inside=(y:number,x:number)=>y>=0&&y<9&&x>=0&&x<9;
+const inside=(y:number,x:number)=>y>=0&&y<9&&x<9&&x>=0;
 const zone=(side:Side,y:number)=>side==='sente'?y<=2:y>=6;
 const goldDirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,0]];
 
@@ -54,14 +55,11 @@ export function initialPosition(handicap:Handicap='even'):Position{
       }
     }
   };
-  if(handicap==='rook')remove('rook');
-  if(handicap==='bishop')remove('bishop');
-  if(handicap==='two'){remove('rook');remove('bishop');}
-  if(handicap==='four'){remove('rook');remove('bishop');remove('lance');remove('lance');}
-  if(handicap==='six'){remove('rook');remove('bishop');remove('lance');remove('lance');remove('knight');remove('knight');}
+  const rule=handicapRule(handicap);
+  for(const kind of rule.removedFromGote)remove(kind);
 
   // 駒落ちは上手（画面上側=gote）が駒を落とし、上手から指す。
-  const position:Position={board,hands:emptyHands(),turn:handicap==='even'?'sente':'gote',ply:0,history:[]};
+  const position:Position={board,hands:emptyHands(),turn:rule.firstTurn,ply:0,history:[]};
   position.history.push({key:positionKey(position),mover:null,gaveCheck:false});
   return position;
 }
