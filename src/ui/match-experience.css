@@ -1,0 +1,19 @@
+.game.cpu-view-gote .board{transform:rotate(180deg)}
+.game.local-mode{position:relative;--local-side-width:58px;padding-right:calc(9px + var(--local-side-width))}
+.game.local-mode #goteHand{transform:rotate(180deg)}
+.game.local-mode .hand{position:relative}
+.game.local-mode .local-resign-button{margin-inline-start:auto;position:sticky;inset-inline-end:0;z-index:4;flex:0 0 auto}
+.game.local-mode .elapsed-label{position:absolute;right:4px;top:50%;width:52px;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:7px 4px;border:1px solid rgba(185,152,98,.45);border-radius:9px;background:rgba(33,25,16,.9);z-index:5}
+.game.local-mode.local-turn-gote .elapsed-label{transform:translateY(-50%) rotate(180deg)}
+.game.local-mode .board{width:min(calc(94vw - var(--local-side-width)),58dvh,680px)}
+.game.local-mode:has(.result-panel) .board{width:min(calc(88vw - var(--local-side-width)),44dvh,520px)}
+.check-effect{position:fixed;inset:0;z-index:1200;pointer-events:none;display:grid;place-items:center;overflow:hidden;animation:check-effect-fade 1s ease-out forwards}
+.check-effect.opponent-view{transform:rotate(180deg)}
+.check-effect strong{position:relative;z-index:2;font-size:clamp(64px,20vw,150px);line-height:1;font-weight:1000;letter-spacing:.08em;color:#fff9d7;text-shadow:0 0 8px #fff,0 0 24px #ffe36d,0 0 46px #8ecbff,0 4px 0 #2b2118;animation:check-text-strike .85s cubic-bezier(.16,.84,.3,1) both}
+.check-bolt{position:absolute;z-index:1;width:9px;height:60vh;background:linear-gradient(#fff,#9ed8ff 35%,#fff 70%,transparent);filter:drop-shadow(0 0 6px #fff) drop-shadow(0 0 14px #6fc7ff);clip-path:polygon(42% 0,100% 0,62% 38%,100% 38%,22% 100%,42% 58%,0 58%);opacity:0;animation:check-bolt-flash .72s ease-out both}
+.bolt-a{left:25%;top:8%;transform:rotate(28deg)}.bolt-b{right:26%;top:10%;transform:rotate(-34deg);animation-delay:.05s}.bolt-c{left:42%;top:18%;height:44vh;transform:rotate(14deg);animation-delay:.12s}.bolt-d{right:41%;top:20%;height:48vh;transform:rotate(-18deg);animation-delay:.16s}
+@keyframes check-text-strike{0%{opacity:0;transform:scale(.4);filter:blur(7px)}28%{opacity:1;transform:scale(1.22);filter:blur(0)}48%{transform:scale(.95)}68%{transform:scale(1.04)}100%{opacity:0;transform:scale(1)}}
+@keyframes check-bolt-flash{0%,12%{opacity:0}18%{opacity:1}30%{opacity:.15}38%{opacity:1}52%,100%{opacity:0}}
+@keyframes check-effect-fade{0%,78%{background:rgba(255,255,255,0)}86%{background:rgba(180,220,255,.12)}100%{background:rgba(255,255,255,0)}}
+@media(max-width:520px){.game.local-mode{--local-side-width:54px;padding-right:calc(5px + var(--local-side-width))}.game.local-mode .board{width:min(calc(98vw - var(--local-side-width)),54dvh)}.game.local-mode:has(.result-panel) .board{width:min(calc(92vw - var(--local-side-width)),39dvh)}.game.local-mode .elapsed-label{right:2px;width:48px;font-size:11px}.game.local-mode .elapsed-label strong{font-size:12px}}
+@media(prefers-reduced-motion:reduce){.check-effect,.check-effect strong,.check-bolt{animation-duration:.01ms!important;animation-iteration-count:1!important}}
