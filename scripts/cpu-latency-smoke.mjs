@@ -104,8 +104,8 @@ async function startCpuLevel(cdp,level){
   await evaluate(cdp,`document.querySelector('#start').click()`);
   await waitFor(cdp,`document.querySelector('[data-mode="cpu"]')`,'mode');
   await evaluate(cdp,`document.querySelector('[data-mode="cpu"]').click()`);
-  await waitFor(cdp,`document.querySelector('#cpuLevel')&&document.querySelector('#go')`,'cpu settings');
-  await evaluate(cdp,`(()=>{const select=document.querySelector('#cpuLevel');select.value=${JSON.stringify(level)};document.querySelector('#go').click();return select.value;})()`);
+  await waitFor(cdp,`document.querySelector('#cpuLevel')&&document.querySelector('#order')&&document.querySelector('#senteHandicap')&&document.querySelector('#goteHandicap')&&document.querySelector('#go')`,'cpu settings');
+  await evaluate(cdp,`(()=>{const select=document.querySelector('#cpuLevel');const order=document.querySelector('#order');select.value=${JSON.stringify(level)};order.value='sente';document.querySelector('#senteHandicap').value='even';document.querySelector('#goteHandicap').value='even';document.querySelector('#go').click();return select.value;})()`);
   await waitFor(cdp,`document.querySelectorAll('.board .cell').length===81`,'board');
 }
 
@@ -115,7 +115,7 @@ async function measureReply(cdp,level){
   await evaluate(cdp,`document.querySelectorAll('.board .cell')[54].click()`);
   await waitFor(cdp,`document.querySelectorAll('.board .cell')[45].classList.contains('legal')`,'pawn destination');
   const started=await evaluate(cdp,`(()=>{window.__cpuLatencyStart=performance.now();document.querySelectorAll('.board .cell')[45].click();return window.__cpuLatencyStart;})()`);
-  await waitFor(cdp,`document.querySelector('.game header strong')?.textContent.includes('先手番')`,`${level} reply`,2500);
+  await waitFor(cdp,`document.querySelector('.match-header>strong')?.textContent.includes('先手番')`,`${level} reply`,2500);
   const elapsed=await evaluate(cdp,`performance.now()-window.__cpuLatencyStart`);
   assert(Number.isFinite(started),`${level}:timer did not start`);
   assert(Number.isFinite(elapsed),`${level}:invalid elapsed time`);
