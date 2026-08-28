@@ -29,9 +29,12 @@ jobs:
           sudo apt-get install -y emscripten
       - name: Build shared C++ WebAssembly engine
         run: sh scripts/build-wasm.sh
-      - name: Install pinned Cloudflare toolchain
+      - name: Install locked Cloudflare toolchain
         working-directory: cloudflare
-        run: npm install
+        run: npm ci
+      - name: Audit Cloudflare dependencies
+        working-directory: cloudflare
+        run: npm audit --audit-level=high
       - name: Type check Worker and shared shogi engine
         working-directory: cloudflare
         run: npm run check
