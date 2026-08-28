@@ -149,12 +149,14 @@ async function main(){
   const senteState=await sente1.inbox.until(v=>v.type==='state');
   assert.equal(senteState.state.status,'playing');
   assert.equal(senteState.state.revision,1);
+  assert.equal(senteState.state.position.history.length,1,'online state must expose only the current canonical history entry');
 
   const gote=await openSocket(created.data.roomId,joined.data.playerToken);
   const goteAuth=await gote.inbox.until(v=>v.type==='authenticated');
   assert.equal(goteAuth.seat,'gote');
   const goteState=await gote.inbox.until(v=>v.type==='state');
   assert.equal(goteState.state.revision,1);
+  assert.equal(goteState.state.position.history.length,1);
 
   const sente2=await openSocket(created.data.roomId,created.data.playerToken);
   assert.equal((await sente2.inbox.until(v=>v.type==='authenticated')).seat,'sente');
@@ -184,12 +186,14 @@ async function main(){
     assert.equal(afterMove.state.position.turn,'gote');
     assert.equal(afterMove.state.position.board[6][4],null);
     assert.equal(afterMove.state.position.board[5][4].kind,'pawn');
+    assert.equal(afterMove.state.position.history.length,1,'broadcast size must not grow with authoritative history');
   }
   await gote.inbox.until(v=>v.type==='state'&&v.state.revision===2);
 
   sente2.socket.send(JSON.stringify(legalMessage));
   const duplicate=await sente2.inbox.until(v=>v.type==='state'&&v.state.revision===2);
   assert.equal(duplicate.state.position.ply,1,'duplicate request must not apply twice');
+  assert.equal(duplicate.state.position.history.length,1);
 
   sente1.socket.send(JSON.stringify({
     ...legalMessage,
@@ -205,6 +209,7 @@ async function main(){
   assert.equal(afterDisconnect.state.status,'playing','disconnect must not become a loss');
   assert.equal(afterDisconnect.state.revision,2);
   assert.equal(afterDisconnect.state.connections.sente,2,'same-seat multiconnection remains one player identity with two live sockets');
+  assert.equal(afterDisconnect.state.position.history.length,1);
 
   sente1.socket.terminate();
   sente2.socket.terminate();
