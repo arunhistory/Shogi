@@ -1,10 +1,36 @@
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
+// ../src/game/handicaps.ts
+var HANDICAP_RULES = {
+  even: { id: "even", label: "\u5E73\u624B", firstTurn: "sente", removedFromGote: [] },
+  rook: { id: "rook", label: "\u98DB\u8ECA\u843D\u3061", firstTurn: "gote", removedFromGote: ["rook"] },
+  bishop: { id: "bishop", label: "\u89D2\u843D\u3061", firstTurn: "gote", removedFromGote: ["bishop"] },
+  two: { id: "two", label: "2\u679A\u843D\u3061", firstTurn: "gote", removedFromGote: ["rook", "bishop"] },
+  four: { id: "four", label: "4\u679A\u843D\u3061", firstTurn: "gote", removedFromGote: ["rook", "bishop", "lance", "lance"] },
+  six: { id: "six", label: "6\u679A\u843D\u3061", firstTurn: "gote", removedFromGote: ["rook", "bishop", "lance", "lance", "knight", "knight"] }
+};
+var HANDICAP_RULE_LIST = Object.freeze([
+  HANDICAP_RULES.even,
+  HANDICAP_RULES.rook,
+  HANDICAP_RULES.bishop,
+  HANDICAP_RULES.two,
+  HANDICAP_RULES.four,
+  HANDICAP_RULES.six
+]);
+function isHandicap(value) {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(HANDICAP_RULES, value);
+}
+__name(isHandicap, "isHandicap");
+function handicapRule(handicap) {
+  return HANDICAP_RULES[handicap];
+}
+__name(handicapRule, "handicapRule");
+
 // src/runtime/common.ts
 var jsonHeaders = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 var passcodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-var handicaps = /* @__PURE__ */ new Set(["even", "rook", "bishop", "two", "four", "six"]);
+var handicaps = new Set(HANDICAP_RULE_LIST.map((rule) => rule.id));
 var contentKeys = /* @__PURE__ */ new Set(["terms", "credits", "licenses"]);
 var roomIdPattern = /^[A-Za-z0-9_-]{16,128}$/;
 var requestIdPattern = /^[A-Za-z0-9_-]{8,128}$/;
@@ -78,7 +104,7 @@ function requestId(value) {
 }
 __name(requestId, "requestId");
 function parseHandicap(value) {
-  if (typeof value !== "string" || !handicaps.has(value)) throw new Error("INVALID_HANDICAP");
+  if (!isHandicap(value)) throw new Error("INVALID_HANDICAP");
   return value;
 }
 __name(parseHandicap, "parseHandicap");
@@ -264,8 +290,7 @@ var ShogiDirectory = class extends DurableObject {
   }
   async create(body, ip) {
     const id = requestId(body.requestId);
-    const handicap = body.handicap;
-    if (!["even", "rook", "bishop", "two", "four", "six"].includes(String(handicap))) throw new Error("INVALID_HANDICAP");
+    const handicap = parseHandicap(body.handicap);
     const appUrl = validateAppUrl(body.appUrl);
     const opKey = `create:${id}`;
     const existing = await this.ctx.storage.get(opKey);
@@ -439,7 +464,7 @@ var emptyHands = /* @__PURE__ */ __name(() => ({
 }), "emptyHands");
 var p = /* @__PURE__ */ __name((side, kind) => ({ side, kind }), "p");
 var enemy = /* @__PURE__ */ __name((s) => s === "sente" ? "gote" : "sente", "enemy");
-var inside = /* @__PURE__ */ __name((y, x) => y >= 0 && y < 9 && x >= 0 && x < 9, "inside");
+var inside = /* @__PURE__ */ __name((y, x) => y >= 0 && y < 9 && x < 9 && x >= 0, "inside");
 var zone = /* @__PURE__ */ __name((side, y) => side === "sente" ? y <= 2 : y >= 6, "zone");
 var goldDirs = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, 0]];
 function positionKey(pos) {
@@ -467,27 +492,9 @@ function initialPosition(handicap = "even") {
       }
     }
   }, "remove");
-  if (handicap === "rook") remove("rook");
-  if (handicap === "bishop") remove("bishop");
-  if (handicap === "two") {
-    remove("rook");
-    remove("bishop");
-  }
-  if (handicap === "four") {
-    remove("rook");
-    remove("bishop");
-    remove("lance");
-    remove("lance");
-  }
-  if (handicap === "six") {
-    remove("rook");
-    remove("bishop");
-    remove("lance");
-    remove("lance");
-    remove("knight");
-    remove("knight");
-  }
-  const position = { board, hands: emptyHands(), turn: handicap === "even" ? "sente" : "gote", ply: 0, history: [] };
+  const rule = handicapRule(handicap);
+  for (const kind of rule.removedFromGote) remove(kind);
+  const position = { board, hands: emptyHands(), turn: rule.firstTurn, ply: 0, history: [] };
   position.history.push({ key: positionKey(position), mover: null, gaveCheck: false });
   return position;
 }
@@ -1113,12 +1120,42 @@ var ShogiRoom = class extends DurableObject2 {
 
 // src/runtime/content.ts
 import { DurableObject as DurableObject3 } from "cloudflare:workers";
+var MAX_MANAGED_CONTENT_BYTES = 131072;
+function requireContentKey(value) {
+  if (typeof value !== "string" || !contentKeys.has(value)) throw new Error("INVALID_CONTENT_KEY");
+  return value;
+}
+__name(requireContentKey, "requireContentKey");
+function requireRevision(value) {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error("INVALID_REVISION");
+  return Number(value);
+}
+__name(requireRevision, "requireRevision");
+function requireManagedBody(value) {
+  let encoded;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    throw new Error("CONTENT_NOT_SERIALIZABLE");
+  }
+  if (encoded === void 0) throw new Error("CONTENT_NOT_SERIALIZABLE");
+  if (new TextEncoder().encode(encoded).byteLength > MAX_MANAGED_CONTENT_BYTES) throw new Error("CONTENT_TOO_LARGE");
+  return value;
+}
+__name(requireManagedBody, "requireManagedBody");
 var ShogiContent = class extends DurableObject3 {
   static {
     __name(this, "ShogiContent");
   }
   constructor(ctx, env) {
     super(ctx, env);
+  }
+  async current(key) {
+    const [body, storedRevision] = await Promise.all([
+      this.ctx.storage.get(`content:${key}`),
+      this.ctx.storage.get(`revision:${key}`)
+    ]);
+    return { body, revision: storedRevision ?? (body === void 0 ? 0 : 1) };
   }
   async fetch(request) {
     if (request.method !== "GET") return errorJson("METHOD_NOT_ALLOWED", 405);
@@ -1127,10 +1164,33 @@ var ShogiContent = class extends DurableObject3 {
     if (!match) return errorJson("NOT_FOUND", 404);
     const key = match[1];
     if (!contentKeys.has(key)) return errorJson("NOT_FOUND", 404);
-    const body = await this.ctx.storage.get(`content:${key}`);
-    if (body === void 0) return responseJson({ key, available: false, revision: 0, body: null });
-    const revision = await this.ctx.storage.get(`revision:${key}`) ?? 1;
+    const { body, revision } = await this.current(key);
+    if (body === void 0) return responseJson({ key, available: false, revision, body: null });
     return responseJson({ key, available: true, revision, body });
+  }
+  // Internal management boundary only. Durable Objects are not Internet-addressable;
+  // no public Worker route forwards user requests to these RPC methods.
+  async upsertManagedContent(keyValue, bodyValue, expectedRevisionValue) {
+    const key = requireContentKey(keyValue);
+    const body = requireManagedBody(bodyValue);
+    const expectedRevision = requireRevision(expectedRevisionValue);
+    const current = await this.current(key);
+    if (current.revision !== expectedRevision) throw new Error("CONTENT_REVISION_CONFLICT");
+    const nextRevision = current.revision + 1;
+    await this.ctx.storage.put({ [`content:${key}`]: body, [`revision:${key}`]: nextRevision });
+    return { key, revision: nextRevision };
+  }
+  async deleteManagedContent(keyValue, expectedRevisionValue) {
+    const key = requireContentKey(keyValue);
+    const expectedRevision = requireRevision(expectedRevisionValue);
+    const current = await this.current(key);
+    if (current.revision !== expectedRevision) throw new Error("CONTENT_REVISION_CONFLICT");
+    if (current.body === void 0) return { key, revision: current.revision, deleted: false };
+    const nextRevision = current.revision + 1;
+    const deletion = this.ctx.storage.delete(`content:${key}`);
+    const revisionWrite = this.ctx.storage.put(`revision:${key}`, nextRevision);
+    const [deleted] = await Promise.all([deletion, revisionWrite]);
+    return { key, revision: nextRevision, deleted };
   }
 };
 
