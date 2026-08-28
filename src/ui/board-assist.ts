@@ -1,4 +1,5 @@
 const app=document.querySelector<HTMLElement>('#app');
+const promotedLabels=new Set(['龍','馬','全','圭','杏','と']);
 
 function sideOf(cell:HTMLButtonElement):'sente'|'gote'{
   return cell.classList.contains('gote')?'gote':'sente';
@@ -10,9 +11,11 @@ function decorateBoard():void{
   if(cells.length!==81)return;
 
   for(const cell of cells){
-    cell.classList.remove('move-target','capture-target','danger','in-check');
+    cell.classList.remove('move-target','capture-target','danger','in-check','promoted');
+    const label=(cell.textContent??'').trim();
+    if(promotedLabels.has(label))cell.classList.add('promoted');
     if(cell.classList.contains('legal')){
-      if((cell.textContent??'').trim())cell.classList.add('capture-target');
+      if(label)cell.classList.add('capture-target');
       else cell.classList.add('move-target');
       cell.setAttribute('aria-description',cell.classList.contains('capture-target')?'合法手・駒を取る':'合法手');
     }else{
