@@ -225,10 +225,15 @@ export class ShogiRoom extends DurableObject<Env>{
       const attachment=socket.deserializeAttachment() as SocketAttachment|undefined;
       if(attachment?.authenticated&&attachment.seat)connections[attachment.seat]++;
     }
+    // Full move history remains authoritative and persisted only inside the room state.
+    // A client needs the current board/hands/turn plus one canonical key proving that
+    // current position; sending every prior internal entry would grow every WebSocket
+    // broadcast for no gameplay benefit and would blur internal history with user kifu.
+    const clientPosition={...state.position,history:state.position.history.slice(-1)};
     return{
       roomId:state.roomId,
       revision:state.revision,
-      position:state.position,
+      position:clientPosition,
       status:state.status,
       connections,
       ...(state.winner?{winner:state.winner}:{}),
