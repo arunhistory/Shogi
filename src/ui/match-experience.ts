@@ -59,8 +59,8 @@ function showCheckEffect(game:HTMLElement,checkedSide:Side):void{
   const remove=()=>effect.remove();
   effect.addEventListener('animationend',event=>{
     if(event.target===effect)remove();
-  },{once:true});
-  window.setTimeout(remove,1100);
+  });
+  window.setTimeout(remove,2200);
 }
 
 function syncCheckEffect(game:HTMLElement,currentTurn:Side|null):void{
