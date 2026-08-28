@@ -406,7 +406,7 @@ function isHandsShape(value:unknown):boolean{
 }
 
 function isHistoryShape(value:unknown,ply:number):boolean{
-  if(!Array.isArray(value)||value.length!==ply+1||value.length<1)return false;
+  if(!Array.isArray(value)||value.length<1||(value.length!==1&&value.length!==ply+1))return false;
   for(const entry of value){
     if(!entry||typeof entry!=='object'||Array.isArray(entry))return false;
     const data=entry as Record<string,unknown>;
