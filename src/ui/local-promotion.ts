@@ -1,10 +1,16 @@
 export type PromotionSide='sente'|'gote';
+export type PromotionMode='local'|'cpu'|'online';
 
 export interface PromotionProbe{
   label:string;
   side:PromotionSide;
   fromY:number;
   toY:number;
+}
+
+interface PromotionContext{
+  probe:PromotionProbe;
+  mode:PromotionMode;
 }
 
 const promotableLabels=new Set(['飛','角','銀','桂','香','歩']);
@@ -24,16 +30,21 @@ export function isOptionalPromotionChoice(probe:PromotionProbe):boolean{
   return true;
 }
 
-export function shouldRotatePromotionDialog(side:PromotionSide):boolean{
-  return side==='gote';
+export function shouldRotatePromotionDialog(side:PromotionSide,mode:PromotionMode='local'):boolean{
+  return mode==='local'&&side==='gote';
 }
 
-function localPromotionProbe(target:HTMLButtonElement):PromotionProbe|null{
+function promotionMode(game:HTMLElement):PromotionMode{
+  if(game.querySelector('.cpu-level'))return'cpu';
+  if(game.querySelector('.online-info'))return'online';
+  return'local';
+}
+
+function promotionContext(target:HTMLButtonElement):PromotionContext|null{
   if(!target.classList.contains('legal'))return null;
   const board=target.closest<HTMLElement>('.board');
   const game=board?.closest<HTMLElement>('.game');
   if(!board||!game)return null;
-  if(game.querySelector('.cpu-level')||game.querySelector('.online-info'))return null;
   const cells=[...board.querySelectorAll<HTMLButtonElement>('.cell')];
   if(cells.length!==81)return null;
   const selected=cells.find(cell=>cell.classList.contains('selected'));
@@ -43,16 +54,19 @@ function localPromotionProbe(target:HTMLButtonElement):PromotionProbe|null{
   if(fromIndex<0||toIndex<0)return null;
   const label=(selected.textContent??'').trim();
   const side:PromotionSide=selected.classList.contains('gote')?'gote':'sente';
-  return{label,side,fromY:Math.floor(fromIndex/9),toY:Math.floor(toIndex/9)};
+  return{
+    mode:promotionMode(game),
+    probe:{label,side,fromY:Math.floor(fromIndex/9),toY:Math.floor(toIndex/9)},
+  };
 }
 
-function showPromotionDialog(side:PromotionSide):Promise<boolean>{
+function showPromotionDialog(side:PromotionSide,mode:PromotionMode):Promise<boolean>{
   return new Promise(resolve=>{
     document.querySelector('.promotion-choice-overlay')?.remove();
     const overlay=document.createElement('div');
     overlay.className='promotion-choice-overlay';
     const dialog=document.createElement('div');
-    dialog.className=`promotion-choice-dialog${shouldRotatePromotionDialog(side)?' opponent-view':''}`;
+    dialog.className=`promotion-choice-dialog${shouldRotatePromotionDialog(side,mode)?' opponent-view':''}`;
     dialog.setAttribute('role','dialog');
     dialog.setAttribute('aria-modal','true');
     dialog.setAttribute('aria-labelledby','promotion-choice-title');
@@ -69,7 +83,10 @@ function showPromotionDialog(side:PromotionSide):Promise<boolean>{
     overlay.append(dialog);
     document.body.append(overlay);
 
+    let finished=false;
     const finish=(value:boolean)=>{
+      if(finished)return;
+      finished=true;
       document.removeEventListener('keydown',onKey,true);
       overlay.remove();
       resolve(value);
@@ -98,21 +115,21 @@ function commitExistingMove(target:HTMLButtonElement,promote:boolean):void{
   }
 }
 
-function interceptLocalPromotion(event:MouseEvent):void{
+function interceptPromotion(event:MouseEvent):void{
   if(bypassInterception||promotionPending)return;
   const source=event.target;
   if(!(source instanceof Element))return;
   const target=source.closest<HTMLButtonElement>('.board .cell');
   if(!target)return;
-  const probe=localPromotionProbe(target);
-  if(!probe||!isOptionalPromotionChoice(probe))return;
+  const context=promotionContext(target);
+  if(!context||!isOptionalPromotionChoice(context.probe))return;
   event.preventDefault();
   event.stopPropagation();
   event.stopImmediatePropagation();
   promotionPending=true;
-  void showPromotionDialog(probe.side)
+  void showPromotionDialog(context.probe.side,context.mode)
     .then(choice=>commitExistingMove(target,choice))
     .finally(()=>{promotionPending=false;});
 }
 
-if(typeof document!=='undefined')document.addEventListener('click',interceptLocalPromotion,true);
+if(typeof document!=='undefined')document.addEventListener('click',interceptPromotion,true);
