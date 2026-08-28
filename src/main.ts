@@ -1,7 +1,10 @@
 import './style.css';
 import { fetchCloudContent } from './content/client';
 import type { CloudContentKey } from './content/client';
-import { applyMove, gameOutcome, initialPosition, isCheck, legalMoves, positionKey } from './game/engine';
+import { rulesMarkup } from './content/rules';
+import { applyMove, gameOutcome, isCheck, legalMoves, positionKey } from './game/engine';
+import { configuredInitialPosition, oppositeSide, resolveOrder } from './game/setup';
+import type { OrderPreference } from './game/setup';
 import type { CpuLevel, GameOutcome, Handicap, Mode, Move, PieceKind, Position, Side } from './game/types';
 import { audioController } from './media/audio';
 import {
@@ -15,14 +18,40 @@ import type { AuthoritativeState, OnlineRoomEntry } from './online/client';
 const names:Record<string,string>={king:'玉',rook:'飛',bishop:'角',gold:'金',silver:'銀',knight:'桂',lance:'香',pawn:'歩',dragon:'龍',horse:'馬',promotedSilver:'全',promotedKnight:'圭',promotedLance:'杏',tokin:'と'};
 const cpuLabels:Record<CpuLevel,string>={beginner:'初心者',intermediate:'中級者',amateur:'アマチュア',pro:'プロ',title:'タイトル級'};
 const sideName=(side:Side)=>side==='sente'?'先手':'後手';
+const orderLabel=(order:OrderPreference)=>order==='random'?'ランダム':order==='sente'?'先手':'後手';
+const handicapLabels:Record<Handicap,string>={even:'平手',rook:'飛車落ち',bishop:'角落ち',two:'2枚落ち',four:'4枚落ち',six:'6枚落ち'};
 
-let pos:Position=initialPosition();
+interface MatchConfig{
+  mode:Mode;
+  cpuLevel:CpuLevel;
+  handicap:Handicap;
+  handicapSide:Side;
+  order:OrderPreference;
+}
+interface LocalTerminal{
+  winner:Side;
+  loser:Side;
+  reason:'resignation';
+}
+interface TerminalState{
+  ended:boolean;
+  winner?:Side;
+  loser?:Side;
+  reason?:'mate'|'repetition'|'perpetual-check'|'resignation';
+}
+
+const defaultConfig=(mode:Mode):MatchConfig=>({mode,cpuLevel:'beginner',handicap:'even',handicapSide:'gote',order:'random'});
+
+let pos:Position=configuredInitialPosition();
 let selected:[number,number]|null=null;
 let hand:PieceKind|null=null;
 let candidates:Move[]=[];
 let activeMode:Mode='local';
+let currentConfig:MatchConfig=defaultConfig('local');
 let cpuLevel:CpuLevel='beginner';
-const humanSide:Side='sente';
+let humanSide:Side='sente';
+let localPlayerOneSide:Side='sente';
+let localTerminal:LocalTerminal|null=null;
 let cpuThinking=false;
 let cpuRequestId:string|null=null;
 let cpuWorker:Worker|null=null;
@@ -31,12 +60,37 @@ let onlineUnsubscribe:(()=>void)|null=null;
 let onlineRoom:OnlineRoomEntry|null=null;
 let onlineState:AuthoritativeState|null=null;
 let onlineSeat:Side|null=null;
-let onlinePendingMove=false;
+let onlinePendingAction=false;
 let onlineMessage='';
+let matchStartedAt:number|null=null;
+let matchEndedAt:number|null=null;
+let elapsedTimer:number|null=null;
 
 const app=document.querySelector<HTMLDivElement>('#app')!;
 
 function resetInteraction(){selected=null;hand=null;candidates=[];}
+function stopElapsedTimer(){if(elapsedTimer!==null){window.clearInterval(elapsedTimer);elapsedTimer=null;}}
+function resetMatchClock(){stopElapsedTimer();matchStartedAt=null;matchEndedAt=null;}
+function setMatchClock(startedAt:number|null,endedAt:number|null=null){
+  matchStartedAt=startedAt;
+  matchEndedAt=endedAt;
+  stopElapsedTimer();
+}
+function formatElapsed():string{
+  if(matchStartedAt===null)return'--:--';
+  const end=matchEndedAt??Date.now();
+  const total=Math.max(0,Math.floor((end-matchStartedAt)/1000));
+  const hours=Math.floor(total/3600);
+  const minutes=Math.floor((total%3600)/60);
+  const seconds=total%60;
+  return hours>0?`${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`:`${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+}
+function refreshElapsed(){const node=document.querySelector<HTMLElement>('#elapsed');if(node)node.textContent=formatElapsed();}
+function ensureElapsedTimer(){
+  refreshElapsed();
+  if(matchStartedAt===null||matchEndedAt!==null||elapsedTimer!==null)return;
+  elapsedTimer=window.setInterval(refreshElapsed,1000);
+}
 function cancelCpu(){
   cpuRequestId=null;
   cpuThinking=false;
@@ -69,7 +123,7 @@ function cancelOnline(){
   onlineRoom=null;
   onlineState=null;
   onlineSeat=null;
-  onlinePendingMove=false;
+  onlinePendingAction=false;
   onlineMessage='';
 }
 function clearInviteParameter(){
@@ -78,10 +132,15 @@ function clearInviteParameter(){
   url.searchParams.delete('invite');
   history.replaceState(null,'',`${url.pathname}${url.search}${url.hash}`);
 }
-function menu(){
+function leaveMatch(){
   cancelCpu();
   cancelOnline();
   resetInteraction();
+  resetMatchClock();
+  localTerminal=null;
+}
+function menu(){
+  leaveMatch();
   clearInviteParameter();
   app.innerHTML=`<main class="menu"><h1>将棋</h1><button id="start">スタート</button><button id="rules">ルール</button><button id="settings">設定</button></main>`;
   document.querySelector('#start')!.addEventListener('click',mode);
@@ -89,60 +148,53 @@ function menu(){
   document.querySelector('#settings')!.addEventListener('click',settings);
 }
 function back(){return `<button class="back" id="back">← 戻る</button>`;}
-function bindBack(){document.querySelector('#back')?.addEventListener('click',menu);}
+function bindBack(target:()=>void){document.querySelector('#back')?.addEventListener('click',target);}
 function mode(){
-  cancelCpu();
-  cancelOnline();
+  leaveMatch();
   app.innerHTML=`<main class="panel">${back()}<h2>ゲームモード</h2><button data-mode="cpu">CPU対局</button><button data-mode="local">ローカル2人対局</button><button data-mode="online">オンライン対局</button></main>`;
-  bindBack();
+  bindBack(menu);
   document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>settingsGame((button as HTMLElement).dataset.mode as Mode)));
 }
-function settingsGame(modeValue:Mode){
-  cancelCpu();
-  cancelOnline();
-  app.innerHTML=`<main class="panel">${back()}<h2>ゲーム設定</h2>${modeValue==='cpu'?`<label>CPU難易度<select id="cpuLevel"><option value="beginner">初心者</option><option value="intermediate">中級者</option><option value="amateur">アマチュア</option><option value="pro">プロ</option><option value="title">タイトル級</option></select></label>`:''}<label>駒落ち<select id="handicap"><option value="even">平手</option><option value="rook">飛車落ち</option><option value="bishop">角落ち</option><option value="two">2枚落ち</option><option value="four">4枚落ち</option><option value="six">6枚落ち</option></select></label><button id="go">開始</button><p class="note">${modeValue==='online'?'オンライン対局はCloudflare側の正式状態管理へ接続して開始します。接続先未設定時は対局を開始しません。':''}</p></main>`;
-  bindBack();
+function selectedOption(value:string,current:string){return value===current?' selected':'';}
+function settingsGame(modeValue:Mode,preset:MatchConfig=defaultConfig(modeValue)){
+  leaveMatch();
+  const config={...preset,mode:modeValue};
+  const orderTitle=modeValue==='local'?'プレイヤー1の先手・後手':'あなたの先手・後手';
+  app.innerHTML=`<main class="panel game-settings">${back()}<h2>ゲーム設定</h2>
+    ${modeValue==='cpu'?`<label>CPU難易度<select id="cpuLevel"><option value="beginner"${selectedOption('beginner',config.cpuLevel)}>初心者</option><option value="intermediate"${selectedOption('intermediate',config.cpuLevel)}>中級者</option><option value="amateur"${selectedOption('amateur',config.cpuLevel)}>アマチュア</option><option value="pro"${selectedOption('pro',config.cpuLevel)}>プロ</option><option value="title"${selectedOption('title',config.cpuLevel)}>タイトル級</option></select></label>`:''}
+    <label>${orderTitle}<select id="order"><option value="random"${selectedOption('random',config.order)}>ランダム</option><option value="sente"${selectedOption('sente',config.order)}>先手</option><option value="gote"${selectedOption('gote',config.order)}>後手</option></select></label>
+    <label>駒落ち<select id="handicap"><option value="even"${selectedOption('even',config.handicap)}>平手</option><option value="rook"${selectedOption('rook',config.handicap)}>飛車落ち</option><option value="bishop"${selectedOption('bishop',config.handicap)}>角落ち</option><option value="two"${selectedOption('two',config.handicap)}>2枚落ち</option><option value="four"${selectedOption('four',config.handicap)}>4枚落ち</option><option value="six"${selectedOption('six',config.handicap)}>6枚落ち</option></select></label>
+    <label>駒落ち側<select id="handicapSide"><option value="sente"${selectedOption('sente',config.handicapSide)}>先手側</option><option value="gote"${selectedOption('gote',config.handicapSide)}>後手側</option></select></label>
+    <button id="go">開始</button><p class="note">${modeValue==='online'?'先手・後手と駒落ち側は部屋作成時に適用されます。参加する場合は作成済みの部屋設定に従います。':'先手・後手はランダムが初期設定です。'}</p></main>`;
+  bindBack(mode);
+  const handicapSelect=document.querySelector<HTMLSelectElement>('#handicap')!;
+  const handicapSideSelect=document.querySelector<HTMLSelectElement>('#handicapSide')!;
+  const syncHandicapSide=()=>{handicapSideSelect.disabled=handicapSelect.value==='even';};
+  handicapSelect.addEventListener('change',syncHandicapSide);
+  syncHandicapSide();
   document.querySelector('#go')!.addEventListener('click',()=>{
-    const handicap=(document.querySelector('#handicap') as HTMLSelectElement).value as Handicap;
-    if(modeValue==='online'){
-      onlineEntry(handicap);
-      return;
-    }
-    activeMode=modeValue;
-    if(modeValue==='cpu')cpuLevel=(document.querySelector('#cpuLevel') as HTMLSelectElement).value as CpuLevel;
-    pos=initialPosition(handicap);
-    resetInteraction();
-    if(modeValue==='cpu')warmCpuWorker();
-    play();
-    maybeStartCpu();
+    const next:MatchConfig={
+      mode:modeValue,
+      cpuLevel:modeValue==='cpu'?(document.querySelector('#cpuLevel') as HTMLSelectElement).value as CpuLevel:'beginner',
+      order:(document.querySelector('#order') as HTMLSelectElement).value as OrderPreference,
+      handicap:handicapSelect.value as Handicap,
+      handicapSide:handicapSideSelect.value as Side,
+    };
+    currentConfig=next;
+    if(modeValue==='online'){onlineEntry(next);return;}
+    beginOfflineMatch(next);
   });
 }
 function rules(){
-  cancelCpu();
-  cancelOnline();
-  app.innerHTML=`<main class="document rules-document">${back()}<h2>ルール</h2>
-    <section><h3>目的と盤</h3><p>将棋は9×9の盤を使い、交互に1手ずつ指します。通常対局では先手から開始し、相手の玉を詰ませることが目的です。王手そのものでは終局せず、王手を受ける合法手が一つもない「詰み」で勝敗が確定します。玉を実際に取って盤から除く着手は行いません。</p></section>
-    <section><h3>初期配置</h3><p>平手では両者20枚ずつで開始し、持ち駒はありません。各プレイヤーから見た最奥列は、左から「香・桂・銀・金・玉・金・銀・桂・香」と並べます。2列目は左から2マス目に角、右から2マス目に飛車を置き、3列目の9マスすべてに歩を置きます。相手側も相手から見て同じ並びになるよう向かい合わせに配置します。</p><p>駒落ちを選んだ場合は、この平手配置から上手側の指定駒を対局開始前に取り除きます。取り除く駒と最初に指す側は「駒落ち」の項目に示します。</p></section>
-    <section><h3>駒の種類と動き</h3><dl class="piece-rules"><dt>玉</dt><dd>縦・横・斜めの隣接1マス。王手されるマスには移動できません。</dd><dt>飛車</dt><dd>縦・横に何マスでも進めます。途中の駒は飛び越せません。</dd><dt>角</dt><dd>斜めに何マスでも進めます。途中の駒は飛び越せません。</dd><dt>金</dt><dd>前・左右・後ろ・前斜めの計6方向へ1マス。後ろ斜めには進めません。</dd><dt>銀</dt><dd>前1マスと、前後の斜め4方向へ1マス。</dd><dt>桂馬</dt><dd>前方へ2、左右へ1ずれた2地点へ跳びます。途中の駒を飛び越せます。</dd><dt>香車</dt><dd>前方へ何マスでも進めます。途中の駒は飛び越せません。</dd><dt>歩</dt><dd>前方へ1マス。</dd><dt>龍（成飛車）</dt><dd>飛車の動きに加え、斜め隣接1マスへ進めます。</dd><dt>馬（成角）</dt><dd>角の動きに加え、縦・横の隣接1マスへ進めます。</dd><dt>成銀・成桂・成香・と金</dt><dd>金と同じ動きになります。</dd></dl></section>
-    <section><h3>駒を取る・持ち駒・駒打ち</h3><p>移動先に相手の駒があればその駒を取り、自分の持ち駒にします。成駒を取った場合は成る前の駒に戻ります。持ち駒は自分の手番に空きマスへ打つことができ、打った手で手番を終えます。</p></section>
-    <section><h3>成り・不成・強制成り</h3><p>飛車、角、銀、桂、香、歩は、移動元または移動先が相手側の3段に含まれる着手で成ることを選べます。成れる場面でも、合法であれば不成を選べます。ただし、そのままでは次の手以降に一度も動けなくなる歩・香の最終段への移動、桂の最終2段への移動は必ず成ります。</p></section>
-    <section><h3>王手・詰み</h3><p>相手玉を次の手で取れる状態を王手と呼びます。王手された側は、玉を逃がす、王手している駒を取る、合駒をする等により必ず王手を解消しなければなりません。自玉を王手されたままにする着手、自ら王手される状態へ入る着手は不合法です。手番側が王手され、王手を解消する合法手が一つもなければ詰みとなり、その側の敗北です。</p></section>
-    <section><h3>主な禁じ手</h3><ul><li><strong>二歩:</strong> 同じ筋に自分の成っていない歩が既にある場合、その筋へ新たな歩を打てません。</li><li><strong>打ち歩詰め:</strong> 持ち駒の歩を打つ1手だけで相手玉を直ちに詰ませる着手はできません。</li><li><strong>行き所のない駒:</strong> 歩・香を最終段へ、桂を最終2段へ持ち駒から打つことはできません。</li><li><strong>王手放置・自玉を王手にさらす手:</strong> 着手後に自玉が王手されている状態になる手はできません。</li></ul><p>不合法な入力は盤面・持ち駒・手番・履歴へ一切反映せず、合法手だけを正式な着手として確定します。</p></section>
-    <section><h3>投了</h3><p>投了が正式に受理された場合は、投了した側の敗北として終局します。投了ボタン等の具体的なUIは現在の確定仕様に含まれていないため、本アプリでは未確定のまま保持します。</p></section>
-    <section><h3>千日手</h3><p>盤面、両者の持ち駒、手番がすべて同一の局面が4回現れた場合は千日手として通常の着手を終了し、指し直し対象として扱います。これは単なる手順の繰り返しではなく、同一局面の成立回数で判定します。</p></section>
-    <section><h3>連続王手の千日手</h3><p>千日手となる反復区間で一方が連続して毎回王手をかけ続けていた場合は通常の千日手と分け、王手を続けた側の敗北とします。</p></section>
-    <section><h3>入玉・持将棋</h3><p>玉が相手陣へ入っただけでは自動終局しません。入玉・持将棋は別途確定する判定方式・条件に従って処理する仕様ですが、その具体方式は現在未確定です。このため、未確定方式を本アプリ独自に作って自動終局させません。</p></section>
-    <section><h3>駒落ち</h3><p>平手のほか、飛車落ち、角落ち、2枚落ち、4枚落ち、6枚落ちを選べます。駒落ちでは上手（後手側）から指定駒を開始前に除き、上手から指し始めます。飛車落ちは飛車、角落ちは角、2枚落ちは飛車・角、4枚落ちは飛車・角・左右の香、6枚落ちはさらに左右の桂を除きます。</p></section>
-    <section><h3>全モード共通</h3><p>CPU対局、ローカル2人対局、オンライン対局で将棋ルールを変えません。オンラインではCloudflare側の正式局面が基準となり、クライアントが送った着手申告だけで盤面は変化しません。ブラウザ終了や通信切断だけを投了・詰み・敗北として扱いません。</p></section>
-  </main>`;
-  bindBack();
+  leaveMatch();
+  app.innerHTML=`<main class="document rules-document">${back()}<h2>ルール</h2>${rulesMarkup()}</main>`;
+  bindBack(menu);
 }
 function settings(){
-  cancelCpu();
-  cancelOnline();
+  leaveMatch();
   const prefs=audioController.getPreferences();
   app.innerHTML=`<main class="panel settings-panel">${back()}<h2>設定</h2><label class="setting-row"><span>BGM</span><input id="bgmEnabled" type="checkbox" ${prefs.bgmEnabled?'checked':''}></label><label class="setting-row"><span>BGM音量</span><input id="bgmVolume" type="range" min="0" max="100" value="${Math.round(prefs.bgmVolume*100)}"></label><label class="setting-row"><span>SE</span><input id="seEnabled" type="checkbox" ${prefs.seEnabled?'checked':''}></label><label class="setting-row"><span>SE音量</span><input id="seVolume" type="range" min="0" max="100" value="${Math.round(prefs.seVolume*100)}"></label><button data-content="terms">利用規約</button><button data-content="credits">クレジット</button><button data-content="licenses">ライセンス</button><p class="note">BGM・SE素材は外部manifestから読み込みます。素材が未登録でもゲームはそのまま動作します。</p></main>`;
-  bindBack();
+  bindBack(menu);
   void audioController.initialize();
   const bgmEnabled=document.querySelector<HTMLInputElement>('#bgmEnabled')!;
   const bgmVolume=document.querySelector<HTMLInputElement>('#bgmVolume')!;
@@ -159,10 +211,9 @@ function settings(){
   }));
 }
 async function showCloudDocument(key:CloudContentKey,title:string){
-  cancelCpu();
-  cancelOnline();
+  leaveMatch();
   app.innerHTML=`<main class="document">${back()}<h2>${escapeHtml(title)}</h2><p id="documentState">読み込み中…</p></main>`;
-  bindBack();
+  bindBack(settings);
   const state=document.querySelector('#documentState')!;
   const api=onlineApi();
   if(!api){state.textContent='Cloudflare接続先が未設定のため、本文を取得できません。';return;}
@@ -195,12 +246,15 @@ function onlineApi():string|null{
   const value=(import.meta.env.VITE_SHOGI_API_URL as string|undefined)?.trim();
   return value||null;
 }
-function onlineEntry(handicap:Handicap){
-  cancelCpu();
-  cancelOnline();
+function configFromRoom(room:OnlineRoomEntry):MatchConfig{
+  return{mode:'online',cpuLevel:'beginner',handicap:room.handicap,handicapSide:room.handicapSide,order:room.order};
+}
+function onlineEntry(config:MatchConfig){
+  leaveMatch();
   activeMode='online';
-  app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><button id="createRoom">部屋を作成</button><label>パスコード<input id="passcode" inputmode="text" autocomplete="off" maxlength="8"></label><button id="joinRoom">パスコードで接続</button><p class="note" id="onlineStatus">Cloudflare接続先を確認しています。</p></main>`;
-  bindBack();
+  currentConfig={...config,mode:'online'};
+  app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><div class="rule-summary">${escapeHtml(handicapLabels[config.handicap])} / 駒落ち側 ${sideName(config.handicapSide)} / ${escapeHtml(orderLabel(config.order))}</div><button id="createRoom">部屋を作成</button><label>パスコード<input id="passcode" inputmode="text" autocomplete="off" maxlength="8"></label><button id="joinRoom">パスコードで接続</button><p class="note" id="onlineStatus">Cloudflare接続先を確認しています。</p></main>`;
+  bindBack(()=>settingsGame('online',config));
   const status=document.querySelector('#onlineStatus')!;
   const api=onlineApi();
   if(!api){
@@ -212,7 +266,7 @@ function onlineEntry(handicap:Handicap){
   status.textContent='部屋を作るか、受け取ったパスコードを入力してください。';
   document.querySelector('#createRoom')!.addEventListener('click',()=>{
     status.textContent='部屋を作成しています…';
-    void createOnlineRoom(api,handicap).then(room=>connectOnlineRoom(api,room)).catch(()=>{status.textContent='部屋作成に失敗しました。ローカル状態へフォールバックしません。';});
+    void createOnlineRoom(api,config.handicap,config.handicapSide,config.order).then(room=>connectOnlineRoom(api,room)).catch(()=>{status.textContent='部屋作成に失敗しました。ローカル状態へフォールバックしません。';});
   });
   document.querySelector('#joinRoom')!.addEventListener('click',()=>{
     const passcode=(document.querySelector('#passcode') as HTMLInputElement).value.trim();
@@ -222,13 +276,14 @@ function onlineEntry(handicap:Handicap){
   });
 }
 function connectOnlineRoom(api:string,room:OnlineRoomEntry){
-  cancelOnline();
+  leaveMatch();
   activeMode='online';
+  currentConfig=configFromRoom(room);
   onlineRoom=room;
   onlineSeat=room.seat;
   onlineMessage='正式局面を取得しています…';
   app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><p>${escapeHtml(onlineMessage)}</p><p class="note">正式局面はCloudflare側から受信した後に表示します。</p></main>`;
-  bindBack();
+  bindBack(()=>onlineEntry(currentConfig));
   const connection=new OnlineMatchConnection(api,room.roomId);
   onlineConnection=connection;
   onlineUnsubscribe=connection.subscribe(event=>{
@@ -242,27 +297,29 @@ function connectOnlineRoom(api:string,room:OnlineRoomEntry){
       const previousPly=onlineState?.position.ply??event.state.position.ply;
       onlineState=event.state;
       pos=event.state.position;
-      onlinePendingMove=false;
+      onlinePendingAction=false;
       onlineMessage='';
+      currentConfig={mode:'online',cpuLevel:'beginner',handicap:event.state.handicap,handicapSide:event.state.handicapSide,order:event.state.order};
+      setMatchClock(event.state.startedAt??null,event.state.endedAt??null);
       resetInteraction();
       if(event.state.position.ply>previousPly)void audioController.playSe('move');
       play();
       return;
     }
     if(event.type==='rejected'){
-      onlinePendingMove=false;
-      onlineMessage=`着手は反映されませんでした（${event.code}）。正式局面を再取得します。`;
+      onlinePendingAction=false;
+      onlineMessage=`操作は反映されませんでした（${event.code}）。正式局面を再取得します。`;
       if(onlineState)play();
       return;
     }
     if(event.type==='disconnected'){
-      onlinePendingMove=false;
+      onlinePendingAction=false;
       onlineMessage='接続が切れました。切断を敗北として扱わず、同じ席で再接続できます。';
       if(onlineState)play();
       else renderOnlineConnectionFailure();
       return;
     }
-    onlinePendingMove=false;
+    onlinePendingAction=false;
     onlineMessage=`通信エラー: ${event.code}`;
     if(onlineState)play();
     else renderOnlineConnectionFailure();
@@ -274,45 +331,133 @@ function connectOnlineRoom(api:string,room:OnlineRoomEntry){
 }
 function renderOnlineConnectionFailure(){
   app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><p>${escapeHtml(onlineMessage)}</p>${onlineConnection?'<button id="reconnect">再接続</button>':''}</main>`;
-  bindBack();
+  bindBack(()=>onlineEntry(currentConfig));
   document.querySelector('#reconnect')?.addEventListener('click',()=>{
     onlineMessage='再接続しています…';
     try{onlineConnection?.connect();}catch{onlineMessage='再接続を開始できませんでした。';renderOnlineConnectionFailure();}
   });
 }
+function beginOfflineMatch(config:MatchConfig){
+  leaveMatch();
+  activeMode=config.mode;
+  currentConfig={...config};
+  cpuLevel=config.cpuLevel;
+  humanSide=resolveOrder(config.order);
+  localPlayerOneSide=humanSide;
+  pos=configuredInitialPosition(config.handicap,config.handicapSide);
+  localTerminal=null;
+  resetInteraction();
+  setMatchClock(Date.now());
+  if(config.mode==='cpu')warmCpuWorker();
+  play();
+  maybeStartCpu();
+}
+function terminalState():TerminalState{
+  if(activeMode==='online'){
+    if(!onlineState||onlineState.status!=='ended')return{ended:false};
+    if(onlineState.resultReason==='repetition')return{ended:true,reason:'repetition'};
+    const reason=onlineState.resultReason as TerminalState['reason'];
+    return{ended:true,winner:onlineState.winner,loser:onlineState.winner?oppositeSide(onlineState.winner):undefined,reason};
+  }
+  if(localTerminal)return{ended:true,...localTerminal};
+  const outcome=gameOutcome(pos);
+  if(!outcome.ended)return{ended:false};
+  if(outcome.reason==='repetition')return{ended:true,reason:'repetition'};
+  return{ended:true,winner:outcome.winner,loser:outcome.loser,reason:outcome.reason};
+}
+function resultReasonText(reason:TerminalState['reason']):string{
+  if(reason==='mate')return'詰み';
+  if(reason==='perpetual-check')return'連続王手の千日手';
+  if(reason==='resignation')return'投了';
+  if(reason==='repetition')return'千日手';
+  return'';
+}
+function resultMarkup(terminal:TerminalState):string{
+  if(!terminal.ended)return'';
+  let body='';
+  if(terminal.reason==='repetition')body='<div class="result-title">千日手</div>';
+  else if(terminal.winner&&terminal.loser){
+    if(activeMode==='local'){
+      body=`<div class="result-title local-result"><span>${sideName(terminal.winner)}：勝利</span><span>${sideName(terminal.loser)}：敗北</span></div>`;
+    }else{
+      const self=activeMode==='online'?onlineSeat:humanSide;
+      body=`<div class="result-title">${self===terminal.winner?'勝利':'敗北'}</div>`;
+    }
+    const reason=resultReasonText(terminal.reason);
+    if(reason)body+=`<div class="result-reason">${escapeHtml(reason)}</div>`;
+  }
+  return `<section class="result-panel">${body}<div class="result-actions"><button id="playAgain">もう一度対戦する</button><button id="sameAgain">同じルールでもう一度対戦する</button><button id="homeFromResult">ホームに戻る</button></div></section>`;
+}
+function openSettingsForRematch(){const config={...currentConfig};leaveMatch();settingsGame(config.mode,config);}
+function sameRulesAgain(){
+  const config={...currentConfig};
+  if(config.mode!=='online'){beginOfflineMatch(config);return;}
+  leaveMatch();
+  activeMode='online';
+  currentConfig=config;
+  const api=onlineApi();
+  app.innerHTML=`<main class="panel"><h2>オンライン対局</h2><p id="onlineStatus">同じルールで新しい部屋を作成しています…</p><button id="cancelRematch">ゲーム設定へ戻る</button></main>`;
+  document.querySelector('#cancelRematch')?.addEventListener('click',()=>settingsGame('online',config));
+  if(!api){document.querySelector('#onlineStatus')!.textContent='Cloudflare接続先が未設定です。';return;}
+  void createOnlineRoom(api,config.handicap,config.handicapSide,config.order).then(room=>connectOnlineRoom(api,room)).catch(()=>{document.querySelector('#onlineStatus')!.textContent='部屋作成に失敗しました。';});
+}
+function bindResultActions(){
+  document.querySelector('#playAgain')?.addEventListener('click',openSettingsForRematch);
+  document.querySelector('#sameAgain')?.addEventListener('click',sameRulesAgain);
+  document.querySelector('#homeFromResult')?.addEventListener('click',menu);
+}
+function showResignDialog(){
+  document.querySelector('.resign-overlay')?.remove();
+  const overlay=document.createElement('div');
+  overlay.className='resign-overlay';
+  overlay.innerHTML=`<div class="resign-dialog" role="dialog" aria-modal="true" aria-labelledby="resignTitle"><p id="resignTitle">本当にいいですか？</p><div><button id="resignYes">はい</button><button id="resignNo">いいえ</button></div></div>`;
+  document.body.append(overlay);
+  const close=()=>overlay.remove();
+  document.querySelector('#resignNo')?.addEventListener('click',close,{once:true});
+  document.querySelector('#resignYes')?.addEventListener('click',()=>{close();confirmResign();},{once:true});
+  (document.querySelector('#resignNo') as HTMLButtonElement)?.focus();
+}
+function confirmResign(){
+  const terminal=terminalState();
+  if(terminal.ended)return;
+  if(activeMode==='online'){
+    if(!onlineState||onlineState.status!=='playing'||!onlineSeat||onlinePendingAction)return;
+    try{
+      onlineConnection?.sendResign();
+      onlinePendingAction=true;
+      onlineMessage='投了を確認中…';
+    }catch{onlinePendingAction=false;onlineMessage='投了を送信できませんでした。正式状態は変更していません。';}
+    play();
+    return;
+  }
+  const loser=activeMode==='cpu'?humanSide:pos.turn;
+  localTerminal={winner:oppositeSide(loser),loser,reason:'resignation'};
+  matchEndedAt=Date.now();
+  cancelCpu();
+  resetInteraction();
+  play();
+}
 function escapeHtml(value:string){return value.replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]!));}
-function describeOutcome(outcome:GameOutcome):string{
-  if(!outcome.ended)return'';
-  if(outcome.reason==='mate')return`${sideName(outcome.winner)}の勝ち（詰み）`;
-  if(outcome.reason==='perpetual-check')return`${sideName(outcome.winner)}の勝ち（連続王手の千日手）`;
-  if(outcome.reason==='repetition')return'千日手・指し直し対象';
-  return'終局';
-}
-function describeOnlineResult(state:AuthoritativeState):string{
-  if(state.status!=='ended')return'';
-  if(state.resultReason==='repetition')return'千日手・指し直し対象';
-  if(state.winner&&state.resultReason==='mate')return`${sideName(state.winner)}の勝ち（詰み）`;
-  if(state.winner&&state.resultReason==='perpetual-check')return`${sideName(state.winner)}の勝ち（連続王手の千日手）`;
-  return state.winner?`${sideName(state.winner)}の勝ち`:'終局';
-}
 function play(){
   const moves=legalMoves(pos);
-  const localOutcome=gameOutcome(pos);
-  const onlineEnded=activeMode==='online'&&onlineState?.status==='ended';
-  const ended=activeMode==='online'?!!onlineEnded:localOutcome.ended;
-  const onlineCanOperate=activeMode==='online'&&onlineState?.status==='playing'&&onlineSeat===pos.turn&&!onlinePendingMove;
+  const terminal=terminalState();
+  const ended=terminal.ended;
+  if(ended&&matchEndedAt===null){matchEndedAt=activeMode==='online'?(onlineState?.endedAt??Date.now()):Date.now();stopElapsedTimer();}
+  const onlineCanOperate=activeMode==='online'&&onlineState?.status==='playing'&&onlineSeat===pos.turn&&!onlinePendingAction;
   const humanCanOperate=!ended&&!cpuThinking&&(activeMode==='cpu'?pos.turn===humanSide:activeMode==='online'?onlineCanOperate:true);
-  const result=activeMode==='online'&&onlineState?describeOnlineResult(onlineState):describeOutcome(localOutcome);
   let status:string;
-  if(ended)status=result;
+  if(ended)status='終局';
   else if(cpuThinking)status='CPU思考中…';
   else if(activeMode==='online'&&onlineState?.status==='waiting')status='対戦相手を待っています';
-  else if(activeMode==='online'&&onlinePendingMove)status='着手を確認中…';
+  else if(activeMode==='online'&&onlinePendingAction)status='操作を確認中…';
   else status=`${sideName(pos.turn)}番${isCheck(pos,pos.turn)?'・王手':''}`;
   const onlineInfo=activeMode==='online'&&onlineRoom&&onlineState
     ?`<aside class="online-info"><div>あなた: ${onlineSeat?sideName(onlineSeat):'確認中'}</div><div>接続: 先手 ${onlineState.connections.sente} / 後手 ${onlineState.connections.gote}</div><label>招待URL<input readonly value="${escapeHtml(onlineRoom.inviteUrl)}"></label><label>パスコード<input readonly value="${escapeHtml(onlineRoom.passcode)}"></label>${onlineMessage?`<p class="note">${escapeHtml(onlineMessage)}</p>`:''}${onlineMessage?'<button id="reconnect">再接続</button>':''}</aside>`:'';
-  app.innerHTML=`<main class="game"><header>${back()}<strong>${status}</strong></header>${onlineInfo}<section class="hand" id="goteHand"></section><div class="board" id="board" aria-busy="${cpuThinking||onlinePendingMove?'true':'false'}"></div><section class="hand" id="senteHand"></section>${ended?`<div class="result">${escapeHtml(result)}</div>`:''}${activeMode==='cpu'?`<div class="note cpu-level">CPU: ${cpuLabels[cpuLevel]}</div>`:''}</main>`;
-  bindBack();
+  const modeInfo=activeMode==='cpu'?`<div class="note cpu-level">CPU: ${cpuLabels[cpuLevel]} / あなた: ${sideName(humanSide)}</div>`:activeMode==='local'?`<div class="note local-order">プレイヤー1: ${sideName(localPlayerOneSide)}</div>`:'';
+  const canResign=!ended&&(activeMode!=='online'||onlineState?.status==='playing');
+  app.innerHTML=`<main class="game"><header>${canResign?'<button class="resign-button" id="resign">諦める</button>':'<span class="resign-spacer"></span>'}<div class="match-header"><span class="elapsed-label">経過 <strong id="elapsed">${formatElapsed()}</strong></span><strong>${status}</strong></div></header>${onlineInfo}<section class="hand" id="goteHand"></section><div class="board" id="board" aria-busy="${cpuThinking||onlinePendingAction?'true':'false'}"></div><section class="hand" id="senteHand"></section>${modeInfo}${resultMarkup(terminal)}</main>`;
+  document.querySelector('#resign')?.addEventListener('click',showResignDialog);
+  bindResultActions();
   document.querySelector('#reconnect')?.addEventListener('click',()=>{
     onlineMessage='再接続しています…';
     try{onlineConnection?.connect();}catch{onlineMessage='再接続を開始できませんでした。';play();}
@@ -331,6 +476,7 @@ function play(){
   }
   renderHand('gote','goteHand',moves,humanCanOperate);
   renderHand('sente','senteHand',moves,humanCanOperate);
+  if(ended)stopElapsedTimer();else ensureElapsedTimer();
 }
 function renderHand(side:Side,id:string,moves:Move[],humanCanOperate:boolean){
   const element=document.querySelector(`#${id}`)!;
@@ -344,9 +490,8 @@ function renderHand(side:Side,id:string,moves:Move[],humanCanOperate:boolean){
   }
 }
 function clickSquare(y:number,x:number,moves:Move[]){
-  const ended=activeMode==='online'?onlineState?.status==='ended':gameOutcome(pos).ended;
-  if(cpuThinking||ended||(activeMode==='cpu'&&pos.turn!==humanSide))return;
-  if(activeMode==='online'&&(!onlineState||onlineState.status!=='playing'||onlineSeat!==pos.turn||onlinePendingMove))return;
+  if(cpuThinking||terminalState().ended||(activeMode==='cpu'&&pos.turn!==humanSide))return;
+  if(activeMode==='online'&&(!onlineState||onlineState.status!=='playing'||onlineSeat!==pos.turn||onlinePendingAction))return;
   const hit=candidates.filter(move=>move.to[0]===y&&move.to[1]===x);
   if(hit.length){
     let move=hit[0]!;
@@ -354,7 +499,7 @@ function clickSquare(y:number,x:number,moves:Move[]){
     if(activeMode==='online'){
       try{
         onlineConnection?.sendMove(move);
-        onlinePendingMove=true;
+        onlinePendingAction=true;
         onlineMessage='';
       }catch{onlineMessage='着手を送信できませんでした。正式局面は変更していません。';}
       resetInteraction();
@@ -380,7 +525,7 @@ function clickSquare(y:number,x:number,moves:Move[]){
   play();
 }
 function maybeStartCpu(){
-  if(activeMode!=='cpu'||pos.turn===humanSide||gameOutcome(pos).ended||cpuThinking)return;
+  if(activeMode!=='cpu'||pos.turn===humanSide||terminalState().ended||cpuThinking)return;
   cpuThinking=true;
   const requestId=crypto.randomUUID();
   const sourceKey=positionKey(pos);
@@ -390,7 +535,7 @@ function maybeStartCpu(){
     if(worker!==cpuWorker||event.data.requestId!==cpuRequestId)return;
     cpuThinking=false;
     cpuRequestId=null;
-    if(!event.data.ok||!event.data.result?.move||event.data.positionKey!==sourceKey||positionKey(pos)!==sourceKey){play();return;}
+    if(terminalState().ended||!event.data.ok||!event.data.result?.move||event.data.positionKey!==sourceKey||positionKey(pos)!==sourceKey){play();return;}
     try{pos=applyMove(pos,event.data.result.move);}catch{play();return;}
     void audioController.playSe('move');
     resetInteraction();
@@ -408,18 +553,18 @@ async function start(){
   if(!api){
     activeMode='online';
     app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><p>Cloudflare接続先が未設定のため、招待された正式局面へ接続できません。</p></main>`;
-    bindBack();
+    bindBack(menu);
     return;
   }
   activeMode='online';
   app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><p>招待された部屋へ接続しています…</p></main>`;
-  bindBack();
+  bindBack(menu);
   try{
     const room=await joinOnlineInvite(api,invite);
     connectOnlineRoom(api,room);
   }catch{
     app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><p>招待URLから部屋へ接続できませんでした。</p></main>`;
-    bindBack();
+    bindBack(menu);
   }
 }
 
