@@ -3,8 +3,8 @@ import { fetchCloudContent } from './content/client';
 import type { CloudContentKey } from './content/client';
 import { rulesMarkup } from './content/rules';
 import { applyMove, gameOutcome, isCheck, legalMoves, positionKey } from './game/engine';
-import { configuredInitialPosition, oppositeSide, resolveOrder } from './game/setup';
-import type { OrderPreference } from './game/setup';
+import { configuredInitialPosition, oppositeSide, resolveHandicapSide, resolveOrder } from './game/setup';
+import type { HandicapTarget, OrderPreference } from './game/setup';
 import type { CpuLevel, GameOutcome, Handicap, Mode, Move, PieceKind, Position, Side } from './game/types';
 import { audioController } from './media/audio';
 import {
@@ -25,7 +25,7 @@ interface MatchConfig{
   mode:Mode;
   cpuLevel:CpuLevel;
   handicap:Handicap;
-  handicapSide:Side;
+  handicapTarget:HandicapTarget;
   order:OrderPreference;
 }
 interface LocalTerminal{
@@ -40,7 +40,7 @@ interface TerminalState{
   reason?:'mate'|'repetition'|'perpetual-check'|'resignation';
 }
 
-const defaultConfig=(mode:Mode):MatchConfig=>({mode,cpuLevel:'beginner',handicap:'even',handicapSide:'gote',order:'random'});
+const defaultConfig=(mode:Mode):MatchConfig=>({mode,cpuLevel:'beginner',handicap:'even',handicapTarget:'opponent',order:'random'});
 
 let pos:Position=configuredInitialPosition();
 let selected:[number,number]|null=null;
@@ -160,25 +160,27 @@ function settingsGame(modeValue:Mode,preset:MatchConfig=defaultConfig(modeValue)
   leaveMatch();
   const config={...preset,mode:modeValue};
   const orderTitle=modeValue==='local'?'プレイヤー1の先手・後手':'あなたの先手・後手';
+  const selfTargetLabel=modeValue==='local'?'自分（プレイヤー1）':'自分';
+  const opponentTargetLabel=modeValue==='local'?'相手（プレイヤー2）':'相手';
   app.innerHTML=`<main class="panel game-settings">${back()}<h2>ゲーム設定</h2>
     ${modeValue==='cpu'?`<label>CPU難易度<select id="cpuLevel"><option value="beginner"${selectedOption('beginner',config.cpuLevel)}>初心者</option><option value="intermediate"${selectedOption('intermediate',config.cpuLevel)}>中級者</option><option value="amateur"${selectedOption('amateur',config.cpuLevel)}>アマチュア</option><option value="pro"${selectedOption('pro',config.cpuLevel)}>プロ</option><option value="title"${selectedOption('title',config.cpuLevel)}>タイトル級</option></select></label>`:''}
     <label>${orderTitle}<select id="order"><option value="random"${selectedOption('random',config.order)}>ランダム</option><option value="sente"${selectedOption('sente',config.order)}>先手</option><option value="gote"${selectedOption('gote',config.order)}>後手</option></select></label>
     <label>駒落ち<select id="handicap"><option value="even"${selectedOption('even',config.handicap)}>平手</option><option value="rook"${selectedOption('rook',config.handicap)}>飛車落ち</option><option value="bishop"${selectedOption('bishop',config.handicap)}>角落ち</option><option value="two"${selectedOption('two',config.handicap)}>2枚落ち</option><option value="four"${selectedOption('four',config.handicap)}>4枚落ち</option><option value="six"${selectedOption('six',config.handicap)}>6枚落ち</option></select></label>
-    <label>駒落ち側<select id="handicapSide"><option value="sente"${selectedOption('sente',config.handicapSide)}>先手側</option><option value="gote"${selectedOption('gote',config.handicapSide)}>後手側</option></select></label>
-    <button id="go">開始</button><p class="note">${modeValue==='online'?'先手・後手と駒落ち側は部屋作成時に適用されます。参加する場合は作成済みの部屋設定に従います。':'先手・後手はランダムが初期設定です。'}</p></main>`;
+    <label>駒落ちする側<select id="handicapTarget"><option value="self"${selectedOption('self',config.handicapTarget)}>${selfTargetLabel}</option><option value="opponent"${selectedOption('opponent',config.handicapTarget)}>${opponentTargetLabel}</option></select></label>
+    <button id="go">開始</button><p class="note">${modeValue==='online'?'先手・後手と「自分 / 相手」の駒落ち指定は部屋作成時に適用されます。参加する場合は作成済みの部屋設定に従います。':'先手・後手はランダムが初期設定です。'}</p></main>`;
   bindBack(mode);
   const handicapSelect=document.querySelector<HTMLSelectElement>('#handicap')!;
-  const handicapSideSelect=document.querySelector<HTMLSelectElement>('#handicapSide')!;
-  const syncHandicapSide=()=>{handicapSideSelect.disabled=handicapSelect.value==='even';};
-  handicapSelect.addEventListener('change',syncHandicapSide);
-  syncHandicapSide();
+  const handicapTargetSelect=document.querySelector<HTMLSelectElement>('#handicapTarget')!;
+  const syncHandicapTarget=()=>{handicapTargetSelect.disabled=handicapSelect.value==='even';};
+  handicapSelect.addEventListener('change',syncHandicapTarget);
+  syncHandicapTarget();
   document.querySelector('#go')!.addEventListener('click',()=>{
     const next:MatchConfig={
       mode:modeValue,
       cpuLevel:modeValue==='cpu'?(document.querySelector('#cpuLevel') as HTMLSelectElement).value as CpuLevel:'beginner',
       order:(document.querySelector('#order') as HTMLSelectElement).value as OrderPreference,
       handicap:handicapSelect.value as Handicap,
-      handicapSide:handicapSideSelect.value as Side,
+      handicapTarget:handicapTargetSelect.value as HandicapTarget,
     };
     currentConfig=next;
     if(modeValue==='online'){onlineEntry(next);return;}
@@ -246,14 +248,17 @@ function onlineApi():string|null{
   const value=(import.meta.env.VITE_SHOGI_API_URL as string|undefined)?.trim();
   return value||null;
 }
+function handicapTargetForSeat(handicapSide:Side,seat:Side):HandicapTarget{
+  return handicapSide===seat?'self':'opponent';
+}
 function configFromRoom(room:OnlineRoomEntry):MatchConfig{
-  return{mode:'online',cpuLevel:'beginner',handicap:room.handicap,handicapSide:room.handicapSide,order:room.order};
+  return{mode:'online',cpuLevel:'beginner',handicap:room.handicap,handicapTarget:handicapTargetForSeat(room.handicapSide,room.seat),order:room.order};
 }
 function onlineEntry(config:MatchConfig){
   leaveMatch();
   activeMode='online';
   currentConfig={...config,mode:'online'};
-  app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><div class="rule-summary">${escapeHtml(handicapLabels[config.handicap])} / 駒落ち側 ${sideName(config.handicapSide)} / ${escapeHtml(orderLabel(config.order))}</div><button id="createRoom">部屋を作成</button><label>パスコード<input id="passcode" inputmode="text" autocomplete="off" maxlength="8"></label><button id="joinRoom">パスコードで接続</button><p class="note" id="onlineStatus">Cloudflare接続先を確認しています。</p></main>`;
+  app.innerHTML=`<main class="panel">${back()}<h2>オンライン対局</h2><div class="rule-summary">${escapeHtml(handicapLabels[config.handicap])} / 駒落ち ${config.handicapTarget==='self'?'自分':'相手'} / ${escapeHtml(orderLabel(config.order))}</div><button id="createRoom">部屋を作成</button><label>パスコード<input id="passcode" inputmode="text" autocomplete="off" maxlength="8"></label><button id="joinRoom">パスコードで接続</button><p class="note" id="onlineStatus">Cloudflare接続先を確認しています。</p></main>`;
   bindBack(()=>settingsGame('online',config));
   const status=document.querySelector('#onlineStatus')!;
   const api=onlineApi();
@@ -266,7 +271,7 @@ function onlineEntry(config:MatchConfig){
   status.textContent='部屋を作るか、受け取ったパスコードを入力してください。';
   document.querySelector('#createRoom')!.addEventListener('click',()=>{
     status.textContent='部屋を作成しています…';
-    void createOnlineRoom(api,config.handicap,config.handicapSide,config.order).then(room=>connectOnlineRoom(api,room)).catch(()=>{status.textContent='部屋作成に失敗しました。ローカル状態へフォールバックしません。';});
+    void createOnlineRoom(api,config.handicap,config.handicapTarget,config.order).then(room=>connectOnlineRoom(api,room)).catch(()=>{status.textContent='部屋作成に失敗しました。ローカル状態へフォールバックしません。';});
   });
   document.querySelector('#joinRoom')!.addEventListener('click',()=>{
     const passcode=(document.querySelector('#passcode') as HTMLInputElement).value.trim();
@@ -299,7 +304,8 @@ function connectOnlineRoom(api:string,room:OnlineRoomEntry){
       pos=event.state.position;
       onlinePendingAction=false;
       onlineMessage='';
-      currentConfig={mode:'online',cpuLevel:'beginner',handicap:event.state.handicap,handicapSide:event.state.handicapSide,order:event.state.order};
+      const seat=onlineSeat??onlineRoom?.seat??'sente';
+      currentConfig={mode:'online',cpuLevel:'beginner',handicap:event.state.handicap,handicapTarget:handicapTargetForSeat(event.state.handicapSide,seat),order:event.state.order};
       setMatchClock(event.state.startedAt??null,event.state.endedAt??null);
       resetInteraction();
       if(event.state.position.ply>previousPly)void audioController.playSe('move');
@@ -344,7 +350,7 @@ function beginOfflineMatch(config:MatchConfig){
   cpuLevel=config.cpuLevel;
   humanSide=resolveOrder(config.order);
   localPlayerOneSide=humanSide;
-  pos=configuredInitialPosition(config.handicap,config.handicapSide);
+  pos=configuredInitialPosition(config.handicap,resolveHandicapSide(config.handicapTarget,humanSide));
   localTerminal=null;
   resetInteraction();
   setMatchClock(Date.now());
@@ -399,7 +405,7 @@ function sameRulesAgain(){
   app.innerHTML=`<main class="panel"><h2>オンライン対局</h2><p id="onlineStatus">同じルールで新しい部屋を作成しています…</p><button id="cancelRematch">ゲーム設定へ戻る</button></main>`;
   document.querySelector('#cancelRematch')?.addEventListener('click',()=>settingsGame('online',config));
   if(!api){document.querySelector('#onlineStatus')!.textContent='Cloudflare接続先が未設定です。';return;}
-  void createOnlineRoom(api,config.handicap,config.handicapSide,config.order).then(room=>connectOnlineRoom(api,room)).catch(()=>{document.querySelector('#onlineStatus')!.textContent='部屋作成に失敗しました。';});
+  void createOnlineRoom(api,config.handicap,config.handicapTarget,config.order).then(room=>connectOnlineRoom(api,room)).catch(()=>{document.querySelector('#onlineStatus')!.textContent='部屋作成に失敗しました。';});
 }
 function bindResultActions(){
   document.querySelector('#playAgain')?.addEventListener('click',openSettingsForRematch);

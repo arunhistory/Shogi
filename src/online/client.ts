@@ -1,7 +1,7 @@
 import { positionKey } from '../game/engine';
 import { isHandicap } from '../game/handicaps';
-import { isOrderPreference, isSide } from '../game/setup';
-import type { OrderPreference } from '../game/setup';
+import { isHandicapTarget, isOrderPreference, isSide } from '../game/setup';
+import type { HandicapTarget, OrderPreference } from '../game/setup';
 import type { Handicap, Move, Position, Side } from '../game/types';
 
 export interface OnlineRoomEntry {
@@ -195,11 +195,11 @@ export function clearActiveOnlineRoom():void{
   sessionStorage.removeItem(activeRoomKey);
 }
 
-export async function createOnlineRoom(base:string,handicap:Handicap,handicapSide:Side='gote',order:OrderPreference='random'):Promise<OnlineRoomEntry>{
-  if(!isSide(handicapSide)||!isOrderPreference(order))throw new Error('INVALID_MATCH_RULES');
-  const op=`create:${handicap}:${handicapSide}:${order}`;
+export async function createOnlineRoom(base:string,handicap:Handicap,handicapTarget:HandicapTarget='opponent',order:OrderPreference='random'):Promise<OnlineRoomEntry>{
+  if(!isHandicapTarget(handicapTarget)||!isOrderPreference(order))throw new Error('INVALID_MATCH_RULES');
+  const op=`create:${handicap}:${handicapTarget}:${order}`;
   const requestId=operationRequestId(op);
-  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap,handicapSide,order}));
+  const handshake=parseHandshake(await postJson(base,'/v1/rooms',{requestId,handicap,handicapTarget,order}));
   rememberPlayer(handshake);
   completeOperation(op);
   return publicEntry(handshake);
