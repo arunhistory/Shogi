@@ -1,3 +1,4 @@
+import { HANDICAP_RULE_LIST, isHandicap } from '../../../src/game/handicaps';
 import type { Handicap, Move, PieceKind, Position, Side } from '../../../src/game/types';
 
 export interface Env {
@@ -65,7 +66,7 @@ export interface JoinOperation {
 
 export const jsonHeaders={'content-type':'application/json; charset=utf-8','cache-control':'no-store'} as const;
 export const passcodeAlphabet='23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-export const handicaps=new Set<Handicap>(['even','rook','bishop','two','four','six']);
+export const handicaps=new Set<Handicap>(HANDICAP_RULE_LIST.map(rule=>rule.id));
 export const contentKeys=new Set<ContentKey>(['terms','credits','licenses']);
 export const roomIdPattern=/^[A-Za-z0-9_-]{16,128}$/;
 export const requestIdPattern=/^[A-Za-z0-9_-]{8,128}$/;
@@ -124,8 +125,8 @@ export function requestId(value:unknown):string{
 }
 
 export function parseHandicap(value:unknown):Handicap{
-  if(typeof value!=='string'||!handicaps.has(value as Handicap))throw new Error('INVALID_HANDICAP');
-  return value as Handicap;
+  if(!isHandicap(value))throw new Error('INVALID_HANDICAP');
+  return value;
 }
 
 export function parseMove(value:unknown):Move{
