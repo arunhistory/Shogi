@@ -1,3 +1,4 @@
+import { encodePositionKey } from './position-key';
 import type {
   Board,
   BoardKind,
@@ -28,7 +29,7 @@ const zone=(side:Side,y:number)=>side==='sente'?y<=2:y>=6;
 const goldDirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,0]];
 
 export function positionKey(pos:Position):string{
-  return JSON.stringify([pos.turn,pos.board,pos.hands]);
+  return encodePositionKey(pos);
 }
 
 export function initialPosition(handicap:Handicap='even'):Position{
