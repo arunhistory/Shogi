@@ -300,17 +300,11 @@ self.onmessage=async(event:MessageEvent<CpuWorkerRequest>)=>{
     const response:CpuResponse={requestId,positionKey:key,ok:true,wasmUsed:searched.wasmUsed,result:searched.result};
     self.postMessage(response);
   }catch(error){
-    try{
-      const fallback=chooseCpuMove(position,level);
-      const response:CpuResponse={requestId,positionKey:key,ok:true,wasmUsed:false,result:fallback};
-      self.postMessage(response);
-    }catch(fallbackError){
-      const response:CpuResponse={
-        requestId,positionKey:key,ok:false,wasmUsed:false,
-        error:fallbackError instanceof Error?fallbackError.message:error instanceof Error?error.message:'CPU_SEARCH_FAILED',
-      };
-      self.postMessage(response);
-    }
+    const fallback=chooseCpuFallbackMove(position,level);
+    const response:CpuResponse=fallback
+      ?{requestId,positionKey:key,ok:true,wasmUsed:false,result:{move:fallback,completedDepth:0,nodesVisited:0,logicalJobsCompleted:0,physicalWorkers:workerPool.length}}
+      :{requestId,positionKey:key,ok:false,wasmUsed:false,error:error instanceof Error?error.message:'CPU_SEARCH_FAILED'};
+    self.postMessage(response);
   }
 };
 
