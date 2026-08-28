@@ -104,8 +104,8 @@ async function startCpuLevel(cdp,level){
   await evaluate(cdp,`document.querySelector('#start').click()`);
   await waitFor(cdp,`document.querySelector('[data-mode="cpu"]')`,'mode');
   await evaluate(cdp,`document.querySelector('[data-mode="cpu"]').click()`);
-  await waitFor(cdp,`document.querySelector('#cpuLevel')&&document.querySelector('#go')`,'cpu settings');
-  await evaluate(cdp,`(()=>{const select=document.querySelector('#cpuLevel');select.value=${JSON.stringify(level)};document.querySelector('#go').click();return select.value;})()`);
+  await waitFor(cdp,`document.querySelector('#cpuLevel')&&document.querySelector('#order')&&document.querySelector('#go')`,'cpu settings');
+  await evaluate(cdp,`(()=>{const select=document.querySelector('#cpuLevel');const order=document.querySelector('#order');select.value=${JSON.stringify(level)};order.value='sente';document.querySelector('#go').click();return select.value;})()`);
   await waitFor(cdp,`document.querySelectorAll('.board .cell').length===81`,'board');
 }
 
