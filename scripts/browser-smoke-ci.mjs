@@ -31,10 +31,10 @@ async function runAttempt(attempt){
   const tempUrl=new URL(`./.browser-smoke-attempt-${process.pid}-${attempt}-${port}.mjs`,import.meta.url);
   const tempPath=fileURLToPath(tempUrl);
   let source=await readFile(sourcePath,'utf8');
-  if(!source.includes('const debuggingPort=9222;'))throw new Error('SMOKE_DEBUG_PORT_MARKER_MISSING');
-  source=source.replace('const debuggingPort=9222;',`const debuggingPort=${port};`);
-  // Surface Chrome startup diagnostics through this runner instead of leaving its
-  // stderr on an unread pipe. The preview server remains quiet.
+  const marker=/debuggingPort\s*=\s*9222/;
+  if(!marker.test(source))throw new Error('SMOKE_DEBUG_PORT_MARKER_MISSING');
+  source=source.replace(marker,`debuggingPort=${port}`);
+  // Surface Chrome startup diagnostics when the historical formatting is present.
   source=source.replace(
     "  ],{stdio:['ignore','pipe','pipe']});",
     "  ],{stdio:['ignore','ignore','inherit']});",
