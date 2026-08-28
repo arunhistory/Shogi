@@ -11,7 +11,9 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - run: npm install
+      - run: npm ci
+      - name: Audit application dependencies
+        run: npm audit --audit-level=high
       - run: npm test
       - run: npm run build
       - name: Browser smoke test
