@@ -680,7 +680,7 @@ function gameOutcome(pos) {
 __name(gameOutcome, "gameOutcome");
 
 // src/runtime/wasm-engine.ts
-import shogiWasmModule from "./f63fb8e58748951729036a4f1aefcaa60c9ceb27-shogi_engine.wasm";
+import shogiWasmModule from "./a38fd83017f36fb516b1a9bbfceac3a1ab3705a1-shogi_engine.wasm";
 var POSITION_MAGIC = 1397245769;
 var POSITION_WORDS = 97;
 var MAX_LEGAL_MOVES = 768;
