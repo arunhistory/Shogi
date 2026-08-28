@@ -7,6 +7,11 @@
       "loop": true
     }
   ],
-  "se": [],
+  "se": [
+    {
+      "id": "move",
+      "url": "assets/audio/maou_se_system44.wav"
+    }
+  ],
   "visuals": []
 }

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "prepare:bgm": "node scripts/prepare-bgm.mjs",
-    "build": "npm run prepare:bgm && tsc && vite build",
+    "prepare:se": "node scripts/prepare-se.mjs",
+    "build": "npm run prepare:bgm && npm run prepare:se && tsc && vite build",
     "dev": "vite",
     "preview": "vite preview",
     "test": "vitest run",
