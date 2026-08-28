@@ -115,7 +115,6 @@ function physicalWorkerCount(level:CpuLevel):number{
   const profile=CPU_PARALLEL_PROFILES[level];
   const reported=Number(navigator.hardwareConcurrency||4);
   const hardware=Number.isFinite(reported)&&reported>0?Math.trunc(reported):4;
-  // Always reserve one hardware thread for rendering/input when the device exposes more than one.
   const computeSlots=Math.max(1,hardware-1);
   return Math.max(1,Math.min(profile.workerCap,computeSlots));
 }
@@ -176,8 +175,10 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   const usable=safeLegal.length?safeLegal:legal;
   const fastRank=rankCpuMovesFast(position).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
   let survivors=fastRank.length?fastRank:[...usable];
-  let bestMove=chooseCpuFallbackMove(position,level);
-  if(!bestMove||!usable.some(move=>sameCpuMove(move,bestMove)))bestMove=survivors[0]??usable[0]!;
+  const fallbackMove=chooseCpuFallbackMove(position,level);
+  let bestMove:Move=fallbackMove&&usable.some(move=>sameCpuMove(move,fallbackMove))
+    ?fallbackMove
+    :(survivors[0]??usable[0]!);
 
   if(level==='beginner'){
     const serial=chooseCpuMove(position,level);
