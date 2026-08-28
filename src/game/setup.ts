@@ -4,6 +4,7 @@ import type { Handicap, PieceKind, Position, Side } from './types';
 
 export type OrderPreference='random'|'sente'|'gote';
 export type HandicapSide=Side;
+export type HandicapTarget='self'|'opponent';
 
 export interface MatchRules {
   handicap:Handicap;
@@ -19,6 +20,10 @@ export function isSide(value:unknown):value is Side{
   return value==='sente'||value==='gote';
 }
 
+export function isHandicapTarget(value:unknown):value is HandicapTarget{
+  return value==='self'||value==='opponent';
+}
+
 export function oppositeSide(side:Side):Side{
   return side==='sente'?'gote':'sente';
 }
@@ -28,6 +33,10 @@ export function resolveOrder(preference:OrderPreference):Side{
   const value=new Uint8Array(1);
   crypto.getRandomValues(value);
   return (value[0]!&1)===0?'sente':'gote';
+}
+
+export function resolveHandicapSide(target:HandicapTarget,selfSide:Side):Side{
+  return target==='self'?selfSide:oppositeSide(selfSide);
 }
 
 export function configuredInitialPosition(handicap:Handicap='even',handicapSide:HandicapSide='gote'):Position{

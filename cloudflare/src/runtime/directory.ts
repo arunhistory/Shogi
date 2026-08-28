@@ -7,7 +7,9 @@ import {
   errorJson,
   inviteUrl,
   jsonHeaders,
+  oppositeSide,
   parseHandicap,
+  parseHandicapTarget,
   parseOrder,
   parseSide,
   passcodeAlphabet,
@@ -20,22 +22,27 @@ import {
   sha256,
   validateAppUrl,
 } from './common';
-import { isOrderPreference, isSide } from '../../../src/game/setup';
+import { isHandicapTarget, isOrderPreference, isSide } from '../../../src/game/setup';
+import type { HandicapTarget } from '../../../src/game/setup';
 
-function encodeBase64Url(bytes:Uint8Array):string{
-  let binary='';
-  for(const byte of bytes)binary+=String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-
-function normalizeCreateOperation(operation:CreateOperation):CreateOperation{
-  const stored=operation as CreateOperation&{handicapSide?:unknown;order?:unknown;creatorSide?:unknown};
+function normalizeCreateOperation(operation:CreateOperation):CreateOperation&{handicapTarget:HandicapTarget}{
+  const stored=operation as CreateOperation&{handicapTarget?:unknown;handicapSide?:unknown;order?:unknown;creatorSide?:unknown};
+  const creatorSide=isSide(stored.creatorSide)?stored.creatorSide:'sente';
+  const handicapSide=isSide(stored.handicapSide)?stored.handicapSide:'gote';
+  const handicapTarget=isHandicapTarget(stored.handicapTarget)
+    ?stored.handicapTarget
+    :handicapSide===creatorSide?'self':'opponent';
   return{
     ...operation,
-    handicapSide:isSide(stored.handicapSide)?stored.handicapSide:'gote',
+    handicapTarget,
+    handicapSide,
     order:isOrderPreference(stored.order)?stored.order:'sente',
-    creatorSide:isSide(stored.creatorSide)?stored.creatorSide:'sente',
+    creatorSide,
   };
+}
+
+function resolvedHandicapSide(target:HandicapTarget,creatorSide:'sente'|'gote'){
+  return target==='self'?creatorSide:oppositeSide(creatorSide);
 }
 
 export class ShogiDirectory extends DurableObject<Env>{
@@ -118,16 +125,21 @@ export class ShogiDirectory extends DurableObject<Env>{
   private async create(body:Record<string,unknown>,ip:string):Promise<Response>{
     const id=requestId(body.requestId);
     const handicap=parseHandicap(body.handicap);
-    const handicapSide=body.handicapSide===undefined?'gote':parseSide(body.handicapSide);
+    const requestedTarget=body.handicapTarget===undefined?null:parseHandicapTarget(body.handicapTarget);
+    const legacyHandicapSide=body.handicapSide===undefined?null:parseSide(body.handicapSide);
+    if(requestedTarget&&legacyHandicapSide)return errorJson('AMBIGUOUS_HANDICAP_TARGET',400);
     const order=body.order===undefined?'sente':parseOrder(body.order);
     const appUrl=validateAppUrl(body.appUrl);
     const opKey=`create:${id}`;
     const stored=await this.ctx.storage.get<CreateOperation>(opKey);
     if(stored){
       const existing=normalizeCreateOperation(stored);
+      const effectiveLegacySide=legacyHandicapSide??'gote';
+      const target=requestedTarget??(effectiveLegacySide===existing.creatorSide?'self':'opponent');
+      const legacySideMatches=requestedTarget!==null||existing.handicapSide===effectiveLegacySide;
       if(
         existing.kind!=='create'||existing.requestId!==id||existing.handicap!==handicap||
-        existing.handicapSide!==handicapSide||existing.order!==order||existing.appUrl!==appUrl
+        existing.handicapTarget!==target||!legacySideMatches||existing.order!==order||existing.appUrl!==appUrl
       )return errorJson('REQUEST_ID_CONFLICT',409);
       return await this.resumeCreate(opKey,existing);
     }
@@ -135,8 +147,10 @@ export class ShogiDirectory extends DurableObject<Env>{
     await this.enforceRateLimit(ip,'create');
     const passcode=await this.allocatePasscode(opKey);
     const creatorSide=order==='random'?randomSide():order;
+    const handicapSide=legacyHandicapSide??resolvedHandicapSide(requestedTarget??'opponent',creatorSide);
+    const handicapTarget=requestedTarget??(handicapSide===creatorSide?'self':'opponent');
     const operation:CreateOperation={
-      kind:'create',phase:'pending',requestId:id,handicap,handicapSide,order,creatorSide,appUrl,
+      kind:'create',phase:'pending',requestId:id,handicap,handicapTarget,handicapSide,order,creatorSide,appUrl,
       roomId:randomToken(18),inviteToken:randomToken(24),passcode,
     };
     await this.ctx.storage.put(opKey,operation);
@@ -243,4 +257,10 @@ export class ShogiDirectory extends DurableObject<Env>{
     };
     return responseJson(result);
   }
+}
+
+function encodeBase64Url(bytes:Uint8Array):string{
+  let binary='';
+  for(const byte of bytes)binary+=String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }

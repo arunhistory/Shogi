@@ -220,6 +220,31 @@ async function main(){
   sente1.socket.terminate();
   sente2.socket.terminate();
 
+  const selfCreateBody={requestId:'create-e2e-0090',handicap:'rook',handicapTarget:'self',order:'gote'};
+  const selfCreated=await api('/v1/rooms',{method:'POST',body:selfCreateBody});
+  assert.equal(selfCreated.response.status,200);
+  assert.equal(selfCreated.data.seat,'gote');
+  assert.equal(selfCreated.data.handicapSide,'gote','self handicap must follow the creator seat');
+  const selfRetry=await api('/v1/rooms',{method:'POST',body:selfCreateBody});
+  assert.deepEqual(selfRetry.data,selfCreated.data,'relative self retry must be idempotent');
+  const selfJoined=await api('/v1/rooms/join',{method:'POST',body:{requestId:'join-e2e-0090',passcode:selfCreated.data.passcode}});
+  assert.equal(selfJoined.response.status,200);
+  const selfCreatorSocket=await openSocket(selfCreated.data.roomId,selfCreated.data.playerToken);
+  assert.equal((await selfCreatorSocket.inbox.until(v=>v.type==='authenticated')).seat,'gote');
+  const selfState=await selfCreatorSocket.inbox.until(v=>v.type==='state'&&v.state.status==='playing');
+  assert.equal(selfState.state.handicapSide,'gote');
+  assert.equal(hasPiece(selfState.state,'gote','rook'),false,'self-targeted gote rook must be removed');
+  assert.equal(hasPiece(selfState.state,'sente','rook'),true,'opponent rook must remain for self target');
+  selfCreatorSocket.socket.terminate();
+
+  const opponentCreateBody={requestId:'create-e2e-0091',handicap:'bishop',handicapTarget:'opponent',order:'gote'};
+  const opponentCreated=await api('/v1/rooms',{method:'POST',body:opponentCreateBody});
+  assert.equal(opponentCreated.response.status,200);
+  assert.equal(opponentCreated.data.seat,'gote');
+  assert.equal(opponentCreated.data.handicapSide,'sente','opponent handicap must use the opposite seat');
+  const opponentRetry=await api('/v1/rooms',{method:'POST',body:opponentCreateBody});
+  assert.deepEqual(opponentRetry.data,opponentCreated.data,'relative opponent retry must be idempotent');
+
   const customCreateBody={requestId:'create-e2e-0100',handicap:'two',handicapSide:'sente',order:'gote'};
   const customCreated=await api('/v1/rooms',{method:'POST',body:customCreateBody});
   assert.equal(customCreated.response.status,200);

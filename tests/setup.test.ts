@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configuredInitialPosition, oppositeSide } from '../src/game/setup';
+import { configuredInitialPosition, oppositeSide, resolveHandicapSide } from '../src/game/setup';
 
 function countSide(position:ReturnType<typeof configuredInitialPosition>,side:'sente'|'gote'){
   return position.board.flat().filter(piece=>piece?.side===side).length;
@@ -24,6 +24,13 @@ describe('match setup',()=>{
     expect(sente.board.flat().some(piece=>piece?.side==='sente'&&piece.kind==='bishop')).toBe(false);
     expect(gote.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='rook')).toBe(false);
     expect(gote.board.flat().some(piece=>piece?.side==='gote'&&piece.kind==='bishop')).toBe(false);
+  });
+
+  it('resolves self and opponent against either seat',()=>{
+    expect(resolveHandicapSide('self','sente')).toBe('sente');
+    expect(resolveHandicapSide('opponent','sente')).toBe('gote');
+    expect(resolveHandicapSide('self','gote')).toBe('gote');
+    expect(resolveHandicapSide('opponent','gote')).toBe('sente');
   });
 
   it('removes every requested duplicate piece for six-piece handicap',()=>{

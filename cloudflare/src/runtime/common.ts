@@ -1,6 +1,6 @@
 import { HANDICAP_RULE_LIST, isHandicap } from '../../../src/game/handicaps';
-import { isOrderPreference, isSide } from '../../../src/game/setup';
-import type { OrderPreference } from '../../../src/game/setup';
+import { isHandicapTarget, isOrderPreference, isSide } from '../../../src/game/setup';
+import type { HandicapTarget, OrderPreference } from '../../../src/game/setup';
 import type { Handicap, Move, PieceKind, Position, Side } from '../../../src/game/types';
 
 export interface Env {
@@ -57,6 +57,7 @@ export interface CreateOperation {
   phase:'pending'|'done';
   requestId:string;
   handicap:Handicap;
+  handicapTarget?:HandicapTarget;
   handicapSide:Side;
   order:OrderPreference;
   creatorSide:Side;
@@ -148,6 +149,11 @@ export function requestId(value:unknown):string{
 
 export function parseHandicap(value:unknown):Handicap{
   if(!isHandicap(value))throw new Error('INVALID_HANDICAP');
+  return value;
+}
+
+export function parseHandicapTarget(value:unknown):HandicapTarget{
+  if(!isHandicapTarget(value))throw new Error('INVALID_HANDICAP_TARGET');
   return value;
 }
 
