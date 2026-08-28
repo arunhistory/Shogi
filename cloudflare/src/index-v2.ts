@@ -39,6 +39,8 @@ async function workerFetch(request:Request,env:Env):Promise<Response>{
       const result=await directoryStub(env).fetch(asInternalRequest('/create',{
         requestId:requestId(body.requestId),
         handicap:body.handicap,
+        handicapSide:body.handicapSide,
+        order:body.order,
         appUrl:env.APP_URL,
       },request));
       return new Response(result.body,{status:result.status,headers:{...jsonHeaders,...cors}});
