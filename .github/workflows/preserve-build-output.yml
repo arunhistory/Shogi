@@ -1,0 +1,72 @@
+name: preserve-build-output
+
+on:
+  workflow_run:
+    workflows: ["deploy-pages"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: preserve-build-output
+  cancel-in-progress: true
+
+jobs:
+  preserve:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download exact verified Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" --jq '.artifacts[] | select(.name == "github-pages" and .expired == false) | .id' | head -n1)"
+          test -n "${artifact_id}"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/pages-artifact.zip
+          rm -rf /tmp/pages-package /tmp/pages-output
+          mkdir -p /tmp/pages-package /tmp/pages-output
+          unzip -q /tmp/pages-artifact.zip -d /tmp/pages-package
+          if test -f /tmp/pages-package/artifact.tar; then
+            tar -xf /tmp/pages-package/artifact.tar -C /tmp/pages-output
+          else
+            cp -a /tmp/pages-package/. /tmp/pages-output/
+          fi
+          test -s /tmp/pages-output/index.html
+          test -s /tmp/pages-output/wasm/shogi_engine.wasm
+          test -s /tmp/pages-output/deploy/manifest.json
+          find /tmp/pages-output -type f -name '*.js' -size +0c | grep -q .
+
+      - name: Update repository build-output branch
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin build-output >/dev/null 2>&1; then
+            git fetch origin build-output
+            git switch -C build-output origin/build-output
+            git rm -rf .
+          else
+            git switch --orphan build-output
+            git rm -rf --ignore-unmatch .
+          fi
+
+          cp -a /tmp/pages-output/. .
+          printf 'source_commit=%s\nsource_pages_run=%s\n' "${SOURCE_SHA}" "${SOURCE_RUN_ID}" > BUILD_SOURCE.txt
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Preserve verified build ${SOURCE_SHA}"
+          git push origin build-output
