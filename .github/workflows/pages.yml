@@ -51,7 +51,10 @@ jobs:
       - name: Audit application dependencies
         run: npm audit --audit-level=high
       - run: npm test
-      - run: npm run build
+      - name: Build production app
+        env:
+          VITE_SHOGI_API_URL: https://shogi-system.garigarimegane625.workers.dev
+        run: npm run build
       - name: Browser smoke test
         run: npm run test:browser
       - uses: actions/upload-pages-artifact@v5
