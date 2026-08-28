@@ -5,24 +5,34 @@ on:
       - 'cpp/**'
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
+      - 'scripts/cpu-latency-smoke.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
+      - 'src/game/cpu.ts'
       - 'src/game/cpu-worker.ts'
+      - 'src/game/cpu-search-worker.ts'
+      - 'src/main.ts'
       - '.github/workflows/wasm-verify.yml'
   pull_request:
     paths:
       - 'cpp/**'
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
+      - 'scripts/cpu-latency-smoke.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
+      - 'src/game/cpu.ts'
       - 'src/game/cpu-worker.ts'
+      - 'src/game/cpu-search-worker.ts'
+      - 'src/main.ts'
       - '.github/workflows/wasm-verify.yml'
 jobs:
   build-wasm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Fetch verified build cache
+        run: git fetch origin build-output:refs/remotes/origin/build-output --depth=1 || true
       - name: Install Emscripten
         run: |
           sudo apt-get update
@@ -33,3 +43,13 @@ jobs:
         run: test -s public/wasm/shogi_engine.wasm
       - name: Test WebAssembly runtime
         run: node scripts/test-wasm.mjs
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install application dependencies
+        run: npm ci
+      - name: Build application with fresh WebAssembly
+        run: npm run build
+      - name: Verify all CPU reply latencies
+        run: node scripts/cpu-latency-smoke.mjs
