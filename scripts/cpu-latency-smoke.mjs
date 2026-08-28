@@ -115,7 +115,7 @@ async function measureReply(cdp,level){
   await evaluate(cdp,`document.querySelectorAll('.board .cell')[54].click()`);
   await waitFor(cdp,`document.querySelectorAll('.board .cell')[45].classList.contains('legal')`,'pawn destination');
   const started=await evaluate(cdp,`(()=>{window.__cpuLatencyStart=performance.now();document.querySelectorAll('.board .cell')[45].click();return window.__cpuLatencyStart;})()`);
-  await waitFor(cdp,`document.querySelector('.game header strong')?.textContent.includes('先手番')`,`${level} reply`,2500);
+  await waitFor(cdp,`document.querySelector('.match-header>strong')?.textContent.includes('先手番')`,`${level} reply`,2500);
   const elapsed=await evaluate(cdp,`performance.now()-window.__cpuLatencyStart`);
   assert(Number.isFinite(started),`${level}:timer did not start`);
   assert(Number.isFinite(elapsed),`${level}:invalid elapsed time`);
