@@ -11,6 +11,10 @@ function playingState(){
     position:initialPosition(),
     status:'playing' as const,
     connections:{sente:5,gote:3},
+    handicap:'even' as const,
+    handicapSide:'gote' as const,
+    order:'random' as const,
+    startedAt:1_700_000_000_000,
   };
 }
 
@@ -21,6 +25,7 @@ describe('authoritative client state validation',()=>{
     const parsed=parseAuthoritativeState(playingState(),roomId);
     expect(parsed).not.toBeNull();
     expect(parsed?.connections).toEqual({sente:5,gote:3});
+    expect(parsed?.startedAt).toBe(1_700_000_000_000);
   });
 
   it('accepts a current-position-only history snapshot for long online games',()=>{
@@ -36,6 +41,19 @@ describe('authoritative client state validation',()=>{
     const moved=applyMove(initialPosition(),{from:[6,4],to:[5,4]});
     const state={...playingState(),revision:8,position:moved};
     expect(parseAuthoritativeState(state,roomId)).not.toBeNull();
+  });
+
+  it('accepts resignation as an authoritative terminal result',()=>{
+    const ended={...playingState(),status:'ended' as const,winner:'gote' as const,resultReason:'resignation',endedAt:1_700_000_010_000};
+    const parsed=parseAuthoritativeState(ended,roomId);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.winner).toBe('gote');
+    expect(parsed?.resultReason).toBe('resignation');
+  });
+
+  it('rejects end timestamps before the start timestamp',()=>{
+    const ended={...playingState(),status:'ended' as const,winner:'sente' as const,resultReason:'mate',endedAt:1_699_999_999_999};
+    expect(parseAuthoritativeState(ended,roomId)).toBeNull();
   });
 
   it('rejects connection counts beyond the authoritative room ceiling',()=>{
@@ -62,7 +80,7 @@ describe('authoritative client state validation',()=>{
     const missingWinner={...playingState(),status:'ended' as const,resultReason:'mate'};
     expect(parseAuthoritativeState(missingWinner,roomId)).toBeNull();
 
-    const repetition={...playingState(),status:'ended' as const,resultReason:'repetition'};
+    const repetition={...playingState(),status:'ended' as const,resultReason:'repetition',endedAt:1_700_000_010_000};
     expect(parseAuthoritativeState(repetition,roomId)).not.toBeNull();
 
     const impossibleLiveResult={...playingState(),winner:'sente' as const,resultReason:'mate'};
