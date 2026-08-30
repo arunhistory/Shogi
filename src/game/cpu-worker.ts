@@ -106,22 +106,6 @@ function median(values:number[]):number{
   return ordered.length%2?ordered[middle]!:(ordered[middle-1]!+ordered[middle]!)/2;
 }
 
-async function settleBeforeDeadline<T>(promise:Promise<T>,deadline:number):Promise<T|null>{
-  const remaining=deadline-Date.now()-10;
-  if(remaining<=0)return null;
-  return await new Promise(resolve=>{
-    let settled=false;
-    const finish=(value:T|null)=>{
-      if(settled)return;
-      settled=true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer=setTimeout(()=>finish(null),remaining);
-    promise.then(value=>finish(value)).catch(()=>finish(null));
-  });
-}
-
 class RootWorkerSlot {
   private worker:Worker;
   private position:Position|null=null;
@@ -319,9 +303,9 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   }
 
   const deadline=Date.now()+profile.replyDeadlineMs;
-  const gpuForecastPromise:Promise<TitleGpuForecastFabricResult|null>=level==='title'
-    ?runTitleGpuForecastFabric(position,usable).catch(()=>null)
-    :Promise.resolve(null);
+  let gpuForecast:TitleGpuForecastFabricResult|null=null;
+  if(level==='title')gpuForecast=await runTitleGpuForecastFabric(position,usable).catch(()=>null);
+
   const slots=ensureWorkerPool(level,wasmUrl,position);
   let jobsIssued=0;
   let jobsCompleted=0;
@@ -379,7 +363,6 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     stage++;
   }
 
-  const gpuForecast=level==='title'?await settleBeforeDeadline(gpuForecastPromise,deadline):null;
   if(finalRanked.length){
     if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);
     const varied=chooseCpuMoveFromRanked(level,position.ply,finalRanked);
