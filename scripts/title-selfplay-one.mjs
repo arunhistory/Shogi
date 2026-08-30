@@ -103,8 +103,9 @@ try{
   await waitForHttp(appUrl);
 
   chrome=spawn(chromePath,[
-    '--headless=new','--disable-gpu','--disable-dev-shm-usage','--disable-background-networking',
+    '--headless=new','--disable-dev-shm-usage','--disable-background-networking',
     '--no-first-run','--no-default-browser-check','--no-sandbox',
+    '--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',
     `--remote-debugging-address=${host}`,`--remote-debugging-port=${debuggingPort}`,`--user-data-dir=${profile}`,appUrl,
   ],{stdio:['ignore','ignore','inherit']});
   await waitForHttp(`http://${host}:${debuggingPort}/json/version`);
@@ -128,8 +129,15 @@ try{
     let proNodes=0;
     let titleJobs=0;
     let proJobs=0;
+    let titleGpuUses=0;
+    let titleGpuSamples=0;
+    let titleGpuLayers=0;
+    let titleGpuMs=0;
+    let titleMaxReplyMs=0;
+    let proMaxReplyMs=0;
     const search=(worker,level,pos)=>new Promise((resolve,reject)=>{
       const requestId=crypto.randomUUID();
+      const started=performance.now();
       const timer=setTimeout(()=>{cleanup();reject(new Error(level+'_SEARCH_TIMEOUT'));},5000);
       const cleanup=()=>{clearTimeout(timer);worker.removeEventListener('message',onMessage);worker.removeEventListener('error',onError);};
       const onError=()=>{cleanup();reject(new Error(level+'_WORKER_ERROR'));};
@@ -138,7 +146,7 @@ try{
         if(data?.requestId!==requestId)return;
         cleanup();
         if(!data.ok||!data.result?.move){reject(new Error(level+'_SEARCH_FAILED:'+String(data?.error??'NO_MOVE')));return;}
-        resolve(data.result);
+        resolve({result:data.result,elapsedMs:performance.now()-started});
       };
       worker.addEventListener('message',onMessage);
       worker.addEventListener('error',onError);
@@ -146,21 +154,30 @@ try{
     });
     titleWorker.postMessage({type:'warmup',position,level:'title',wasmUrl});
     proWorker.postMessage({type:'warmup',position,level:'pro',wasmUrl});
-    await new Promise(resolve=>setTimeout(resolve,250));
+    await new Promise(resolve=>setTimeout(resolve,500));
     let outcome=engine.gameOutcome(position);
     try{
       while(!outcome.ended&&position.ply<maxPlies){
         const level=position.turn===titleSide?'title':'pro';
         const worker=level==='title'?titleWorker:proWorker;
         const searched=await search(worker,level,position);
+        const result=searched.result;
         if(level==='title'){
-          titleNodes+=Number(searched.nodesVisited??0);
-          titleJobs+=Number(searched.logicalJobsCompleted??0);
+          titleNodes+=Number(result.nodesVisited??0);
+          titleJobs+=Number(result.logicalJobsCompleted??0);
+          titleMaxReplyMs=Math.max(titleMaxReplyMs,searched.elapsedMs);
+          if(result.gpuForecastUsed){
+            titleGpuUses++;
+            titleGpuSamples+=Number(result.gpuForecastSamples??0);
+            titleGpuLayers+=Number(result.gpuForecastLayers??0);
+            titleGpuMs+=Number(result.gpuForecastMs??0);
+          }
         }else{
-          proNodes+=Number(searched.nodesVisited??0);
-          proJobs+=Number(searched.logicalJobsCompleted??0);
+          proNodes+=Number(result.nodesVisited??0);
+          proJobs+=Number(result.logicalJobsCompleted??0);
+          proMaxReplyMs=Math.max(proMaxReplyMs,searched.elapsedMs);
         }
-        position=engine.applyMove(position,searched.move);
+        position=engine.applyMove(position,result.move);
         outcome=engine.gameOutcome(position);
       }
       const result=outcome.ended
@@ -170,6 +187,9 @@ try{
         game:${gameNumber},titleSide,proSide,result,plies:position.ply,
         winner:outcome.winner??null,reason:outcome.reason??(outcome.ended?'ended':'move-limit'),
         titleNodes,proNodes,titleJobs,proJobs,
+        titleGpuUses,titleGpuSamples,titleGpuLayers,titleGpuMs,
+        titleMaxReplyMs,proMaxReplyMs,
+        titleReplyUnder2s:titleMaxReplyMs<2000,
       };
     }finally{
       titleWorker.terminate();
