@@ -6,6 +6,8 @@ on:
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
+      - 'scripts/title-vs-pro-replay.mjs'
+      - 'scripts/title-vs-pro-acceptance.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -19,6 +21,8 @@ on:
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
+      - 'scripts/title-vs-pro-replay.mjs'
+      - 'scripts/title-vs-pro-acceptance.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -53,3 +57,6 @@ jobs:
         run: npm run build
       - name: Verify all CPU reply latencies
         run: node scripts/cpu-latency-smoke.mjs
+      - name: Measure baseline Title versus Pro
+        if: github.ref == 'refs/heads/title-speed-baseline-check'
+        run: node scripts/title-vs-pro-acceptance.mjs
