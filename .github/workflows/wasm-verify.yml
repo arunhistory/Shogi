@@ -6,6 +6,7 @@ on:
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
+      - 'scripts/title-vs-pro-replay.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -19,6 +20,7 @@ on:
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
+      - 'scripts/title-vs-pro-replay.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -53,3 +55,6 @@ jobs:
         run: npm run build
       - name: Verify all CPU reply latencies
         run: node scripts/cpu-latency-smoke.mjs
+      - name: Replay Pro sente versus Title gote
+        if: github.ref == 'refs/heads/optimize-title-cpu-speed'
+        run: node scripts/title-vs-pro-replay.mjs
