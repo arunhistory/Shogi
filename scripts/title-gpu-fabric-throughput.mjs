@@ -105,18 +105,20 @@ try{
   ],{stdio:['ignore','ignore','inherit']});
   await waitForHttp(`http://${host}:${debuggingPort}/json/version`);
   const targets=await (await waitForHttp(`http://${host}:${debuggingPort}/json/list`)).json();
-  const page=targets.find(target=>target.type==='page'&&target.webSocketDebuggerUrl);
+  const page=targets.find(target=>target.type==='page'&&target.webSocketDebuggerUrl&&String(target.url??'').startsWith(appUrl))
+    ??targets.find(target=>target.type==='page'&&target.webSocketDebuggerUrl);
   assert(page,'CDP_PAGE_TARGET_NOT_FOUND');
   cdp=await CdpClient.connect(page.webSocketDebuggerUrl);
   await cdp.send('Runtime.enable');
 
   const result=await evaluate(cdp,`(async()=>{
-    const engine=await import('/src/game/engine.ts');
-    const gpuForecast=await import('/src/game/title-gpu-forecast.ts');
+    const engine=await import('${appUrl}src/game/engine.ts');
+    const gpuForecast=await import('${appUrl}src/game/title-gpu-forecast.ts');
     const position=engine.initialPosition();
     const moves=engine.legalMoves(position);
     await gpuForecast.warmupTitleGpuForecastFabric();
-    return await gpuForecast.runTitleGpuForecastFabric(position,moves);
+    const forecast=await gpuForecast.runTitleGpuForecastFabric(position,moves);
+    return{...forecast,legalMoveCount:moves.length};
   })()`);
 
   assert(result&&result.supported===true,`GPU_FABRIC_UNAVAILABLE:${result?.reason??'UNKNOWN'}`);
@@ -128,7 +130,7 @@ try{
   assert(result.signaturesChecked===32000,`GPU_PATH_SIGNATURE_COUNT:${result.signaturesChecked}`);
   assert(result.stateTransitions>32000,`GPU_STATE_TRANSITIONS:${result.stateTransitions}`);
   assert(result.complete===true,`GPU_FUTURE_STATE_INCOMPLETE:${result.totalSamples}/${result.plannedSamples}`);
-  assert(Array.isArray(result.rootScores)&&result.rootScores.length===engine.legalMoves(position).length,`GPU_ROOT_COVERAGE:${result.rootScores?.length}`);
+  assert(Array.isArray(result.rootScores)&&result.rootScores.length===result.legalMoveCount,`GPU_ROOT_COVERAGE:${result.rootScores?.length}/${result.legalMoveCount}`);
   assert(Number.isFinite(result.elapsedMs)&&result.elapsedMs>0,'GPU_FABRIC_TIME_INVALID');
   console.log('TITLE_GPU_FUTURE_STATES:'+JSON.stringify(result));
 }finally{
