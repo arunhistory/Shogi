@@ -135,6 +135,7 @@ try{
     let titleGpuMs=0;
     let titleMaxReplyMs=0;
     let proMaxReplyMs=0;
+    const moveTrace=[];
     const search=(worker,level,pos)=>new Promise((resolve,reject)=>{
       const requestId=crypto.randomUUID();
       const started=performance.now();
@@ -162,6 +163,16 @@ try{
         const worker=level==='title'?titleWorker:proWorker;
         const searched=await search(worker,level,position);
         const result=searched.result;
+        moveTrace.push({
+          ply:position.ply+1,
+          side:position.turn,
+          level,
+          move:result.move,
+          elapsedMs:searched.elapsedMs,
+          nodesVisited:Number(result.nodesVisited??0),
+          logicalJobsCompleted:Number(result.logicalJobsCompleted??0),
+          completedDepth:Number(result.completedDepth??0),
+        });
         if(level==='title'){
           titleNodes+=Number(result.nodesVisited??0);
           titleJobs+=Number(result.logicalJobsCompleted??0);
@@ -190,6 +201,7 @@ try{
         titleGpuUses,titleGpuSamples,titleGpuLayers,titleGpuMs,
         titleMaxReplyMs,proMaxReplyMs,
         titleReplyUnder2s:titleMaxReplyMs<2000,
+        moveTrace,
       };
     }finally{
       titleWorker.terminate();
