@@ -39,7 +39,7 @@ jobs:
           old='const SAMPLES_PER_LANE=3125;'
           if old not in s:
               raise SystemExit('TITLE_GPU_SAMPLE_ANCHOR_NOT_FOUND')
-          p.write_text(s.replace(old,'const SAMPLES_PER_LANE=32;',1))
+          p.write_text(s.replace(old,'const SAMPLES_PER_LANE=8;',1))
           PY
       - name: Build application
         run: npm run build
