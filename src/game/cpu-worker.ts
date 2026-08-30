@@ -75,6 +75,10 @@ interface CompletedJob {
 interface RankedStageMove {
   move:Move;
   score:number;
+  low:number;
+  high:number;
+  samples:number;
+  completeSamples:number;
   depth:number;
   nodes:number;
   wasm:boolean;
@@ -215,15 +219,45 @@ function rankStageResults(candidates:Move[],completed:CompletedJob[],level:CpuLe
     const scores=chosen.map(item=>item.response.score!).filter(Number.isFinite);
     if(!scores.length)continue;
     const incompletePenalty=complete.length?0:level==='title'?24:level==='pro'?12:0;
+    const low=Math.min(...scores)-incompletePenalty;
+    const high=Math.max(...scores)-incompletePenalty;
     ranked.push({
       move,
       score:median(scores)-incompletePenalty,
+      low,
+      high,
+      samples:results.length,
+      completeSamples:complete.length,
       depth:Math.max(...chosen.map(item=>item.response.depth??item.job.depth)),
       nodes:chosen.reduce((sum,item)=>sum+(item.response.nodesVisited??0),0),
       wasm:chosen.some(item=>item.response.wasmUsed),
     });
   }
-  return ranked.sort((a,b)=>b.score-a.score||b.depth-a.depth||b.nodes-a.nodes);
+  return ranked.sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);
+}
+
+function titleForecastCohort(ranked:RankedStageMove[],stage:number,minSurvivors:number):Move[]{
+  if(ranked.length<=1)return ranked.map(item=>item.move);
+
+  // Numerical-weather-prediction style nesting: the first two forecast cycles
+  // keep the complete legal domain. Only after every candidate has received
+  // broad forecasts do we increase resolution around futures whose uncertainty
+  // envelopes can still overlap the current best forecast.
+  if(stage<2)return ranked.map(item=>item.move);
+
+  const best=ranked[0]!;
+  const uncertaintyBand=stage===2?80:stage===3?48:24;
+  const plausible=ranked.filter(item=>item.high>=best.low-uncertaintyBand);
+  const broadFloor=stage===2?Math.ceil(ranked.length*0.5):minSurvivors;
+  const floor=Math.min(ranked.length,Math.max(minSurvivors,broadFloor));
+  const keepKeys=new Set(plausible.map(item=>moveKey(item.move)));
+  for(const item of ranked.slice(0,floor))keepKeys.add(moveKey(item.move));
+  return ranked.filter(item=>keepKeys.has(moveKey(item.move))).map(item=>item.move);
+}
+
+function titleLaneTarget(stage:number,physicalWorkers:number):number{
+  const desired=[2,3,4,6,8,12][Math.min(stage,5)]??12;
+  return Math.max(1,Math.min(desired,physicalWorkers,12));
 }
 
 async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):Promise<{result:CpuResult;wasmUsed:boolean}>{
@@ -258,18 +292,24 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
 
   while(Date.now()<deadline-80&&jobsIssued<profile.logicalJobTarget&&survivors.length){
     const depth=Math.min(profile.maxDepth,profile.baseDepth+stage*profile.depthStep);
-    const laneCount=Math.min(profile.lanes,1+stage);
     const remainingJobs=profile.logicalJobTarget-jobsIssued;
+    if(level==='title'&&remainingJobs<survivors.length)break;
+
+    const requestedLanes=level==='title'
+      ?titleLaneTarget(stage,slots.length)
+      :Math.min(profile.lanes,1+stage);
+    // Never spend the end of the logical budget on a partial forecast lane:
+    // every surviving root move receives the same number of ensemble members.
+    const fairLaneCount=Math.max(1,Math.min(requestedLanes,Math.floor(remainingJobs/survivors.length)));
     const growth=level==='title'?1.9:1.7;
     const nodeLimit=Math.min(220_000,Math.trunc(profile.nodeBase*Math.pow(growth,stage)));
     const jobs:RootSearchJob[]=[];
-    outer:for(let lane=0;lane<laneCount;lane++){
+    for(let lane=0;lane<fairLaneCount;lane++){
       for(const move of survivors){
         jobs.push({
           jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
           move,depth,nodeLimit,lane,level,profileCode:profile.profileCode,
         });
-        if(jobs.length>=remainingJobs)break outer;
       }
     }
     if(!jobs.length)break;
@@ -285,10 +325,14 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
       finalRanked=chosen;
       bestMove=chosen[0]!.move;
       completedDepth=Math.max(completedDepth,chosen[0]!.depth);
-      const retentionTarget=Math.ceil(chosen.length*profile.retention);
-      const survivorFloor=Math.min(profile.minSurvivors,chosen.length);
-      const keep=Math.max(1,Math.min(chosen.length,Math.max(survivorFloor,retentionTarget)));
-      survivors=chosen.slice(0,keep).map(item=>item.move);
+      if(level==='title'){
+        survivors=titleForecastCohort(chosen,stage,profile.minSurvivors);
+      }else{
+        const retentionTarget=Math.ceil(chosen.length*profile.retention);
+        const survivorFloor=Math.min(profile.minSurvivors,chosen.length);
+        const keep=Math.max(1,Math.min(chosen.length,Math.max(survivorFloor,retentionTarget)));
+        survivors=chosen.slice(0,keep).map(item=>item.move);
+      }
     }else if(Date.now()>=deadline-120){
       break;
     }
