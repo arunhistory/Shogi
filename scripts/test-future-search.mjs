@@ -10,6 +10,7 @@ const FNV_PRIMARY_SEED=1469598103934665603n;
 const FNV_SECONDARY_SEED=0x84222325cbf29ce4n;
 const MASK_64=(1n<<64n)-1n;
 const INVALID=2147483647;
+const NODE_LIMIT=220_000;
 
 const bytes=await readFile(new URL('../public/wasm/shogi_engine.wasm',import.meta.url));
 const {instance}=await WebAssembly.instantiate(bytes,{});
@@ -50,30 +51,53 @@ function encode({from=-1,to,drop=0,promote=false}){
   const encodedFrom=from>=0?from:127;
   return(to&0x7f)|((encodedFrom&0x7f)<<7)|((drop&0x0f)<<14)|((promote?1:0)<<18);
 }
+function runFuture(state,move){
+  const historyWords=write(state);
+  const score=wasm.shogi_search_future_root_move_with_history(WORDS,historyWords,move,1,NODE_LIMIT,0);
+  const nodes=wasm.shogi_nodes_searched();
+  const complete=wasm.shogi_parallel_search_complete();
+  return{score,nodes,complete};
+}
 
-// Sente's silver captures a pawn. The ordinary depth-1 search reaches the
-// post-capture horizon immediately. The future search extends through Gote's
-// reply to Sente's next turn, where the newly captured pawn is now a real
-// drop candidate. This validates that a hand acquisition creates additional
-// searched futures rather than merely changing an evaluation number.
+// Sente's silver can either move quietly or capture a pawn. At the same
+// nominal depth=1, the quiet move reaches the ordinary horizon. Capturing the
+// pawn creates a reusable hand piece, so title future search extends through
+// Gote's reply to Sente's next turn, where pawn drops are real legal futures.
 const board=new Int32Array(81);
 board[0*9+4]=-8;
 board[8*9+4]=8;
 board[4*9+4]=4;
 board[3*9+4]=-1;
 const state={turn:1,board,hands:new Int32Array(14)};
+const quiet=encode({from:4*9+4,to:3*9+3});
 const capture=encode({from:4*9+4,to:3*9+4});
+
 let historyWords=write(state);
-const baselineScore=wasm.shogi_search_root_move_with_history(WORDS,historyWords,capture,1,50_000,0,4);
+const baselineScore=wasm.shogi_search_root_move_with_history(WORDS,historyWords,capture,1,NODE_LIMIT,0,4);
 assert.notEqual(baselineScore,INVALID,'baseline capture search rejected the legal move');
 const baselineNodes=wasm.shogi_nodes_searched();
 
-historyWords=write(state);
-const futureScore=wasm.shogi_search_future_root_move_with_history(WORDS,historyWords,capture,1,50_000,0);
-assert.notEqual(futureScore,INVALID,'future capture search rejected the legal move');
-const futureNodes=wasm.shogi_nodes_searched();
-assert.ok(futureNodes>baselineNodes,`hand acquisition did not expand future search: baseline=${baselineNodes}, future=${futureNodes}`);
-assert.ok(futureNodes>=10,`future search did not reach the next hand-use turn: ${futureNodes}`);
-assert.equal(wasm.shogi_parallel_search_complete(),1,'small hand-aware future search did not complete');
+const quietFuture=runFuture(state,quiet);
+const captureFuture=runFuture(state,capture);
+const metrics={
+  baselineNodes,
+  baselineScore,
+  quietFutureNodes:quietFuture.nodes,
+  quietFutureScore:quietFuture.score,
+  quietFutureComplete:quietFuture.complete,
+  captureFutureNodes:captureFuture.nodes,
+  captureFutureScore:captureFuture.score,
+  captureFutureComplete:captureFuture.complete,
+  nodeLimit:NODE_LIMIT,
+};
+console.log(JSON.stringify(metrics));
 
-console.log(JSON.stringify({ok:true,baselineNodes,futureNodes,baselineScore,futureScore}));
+assert.notEqual(quietFuture.score,INVALID,'future quiet search rejected the legal move');
+assert.notEqual(captureFuture.score,INVALID,'future capture search rejected the legal move');
+assert.ok(captureFuture.nodes>baselineNodes,`hand acquisition did not expand beyond baseline: baseline=${baselineNodes}, future=${captureFuture.nodes}`);
+assert.ok(captureFuture.nodes>quietFuture.nodes,`capture did not create more searched futures than quiet play: quiet=${quietFuture.nodes}, capture=${captureFuture.nodes}`);
+assert.ok(captureFuture.nodes>=10,`future search did not reach the next hand-use turn: ${captureFuture.nodes}`);
+assert.ok(captureFuture.nodes<=NODE_LIMIT,`future search exceeded its node ceiling: ${captureFuture.nodes}`);
+assert.ok(quietFuture.nodes<=NODE_LIMIT,`quiet future search exceeded its node ceiling: ${quietFuture.nodes}`);
+
+console.log(JSON.stringify({ok:true,...metrics}));
