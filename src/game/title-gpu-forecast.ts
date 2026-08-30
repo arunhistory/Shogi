@@ -182,8 +182,8 @@ fn evaluate(base:u32,perspective:i32)->i32{
         let side=sideOf(value);
         if(side==perspective&&attacksSquare(base,square,enemyKing)){score=score+180;}
         if(side==-perspective&&attacksSquare(base,square,ownKing)){score=score-520;}
-        let target=select(ownKing,enemyKing,side==perspective);
-        let distance=max(absI(rowOf(square)-rowOf(target)),absI(colOf(square)-colOf(target)));
+        let targetSquare=select(ownKing,enemyKing,side==perspective);
+        let distance=max(absI(rowOf(square)-rowOf(targetSquare)),absI(colOf(square)-colOf(targetSquare)));
         if(distance<=2){score=score+select(-1,1,side==perspective)*(3-distance)*18;}
       }
       square=square+1u;
