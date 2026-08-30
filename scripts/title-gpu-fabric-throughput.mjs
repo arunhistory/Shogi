@@ -100,7 +100,7 @@ try{
   chrome=spawn(chromePath,[
     '--headless=new','--disable-dev-shm-usage','--disable-background-networking',
     '--no-first-run','--no-default-browser-check','--no-sandbox',
-    '--use-angle=vulkan','--enable-features=Vulkan','--disable-vulkan-surface','--enable-unsafe-webgpu',
+    '--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',
     `--remote-debugging-address=${host}`,`--remote-debugging-port=${debuggingPort}`,`--user-data-dir=${profile}`,appUrl,
   ],{stdio:['ignore','ignore','inherit']});
   await waitForHttp(`http://${host}:${debuggingPort}/json/version`);
