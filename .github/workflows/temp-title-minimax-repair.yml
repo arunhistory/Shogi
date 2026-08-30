@@ -1,0 +1,84 @@
+name: temp-title-minimax-repair
+on:
+  push:
+    branches: [temp/title-nwp-forecast]
+    paths: ['.github/workflows/temp-title-minimax-repair.yml']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: temp/title-nwp-forecast
+      - name: Patch title future forecast and fusion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          gpu=Path('src/game/title-gpu-forecast.ts')
+          text=gpu.read_text()
+
+          old='''  var accumulated=0;\n  var checkpoints=0u;\n\n  loop{\n    if(evaluated>=params.iterations){break;}\n    let side=getState(lane,95u);\n    var bestMove=0xffffffffu;\n    var bestScore=-20000000;\n    var accepted=0u;\n    var attempts=0u;\n    loop{\n      if(accepted>=4u||evaluated>=params.iterations||attempts>=96u){break;}\n      phase=mix32(phase+attempts+rolloutPly*0x85ebca6bu+rollout*0xc2b2ae35u);\n      let encoded=generatedCandidate(lane,side,phase);\n      let candidate=evaluateCandidate(lane,encoded,side,phase);\n'''
+          new='''  var accumulated=0;\n  var checkpoints=0u;\n  var terminalOverride=0;\n  var terminalSeen=false;\n\n  loop{\n    if(evaluated>=params.iterations){break;}\n    let side=getState(lane,95u);\n    let ownTurn=side==rootSide;\n    let acceptedTarget=select(8u,16u,ownTurn);\n    let attemptTarget=select(192u,384u,ownTurn);\n    var bestMove=0xffffffffu;\n    var bestScore=-20000000;\n    var accepted=0u;\n    var attempts=0u;\n    let stableStateSeed=pathSignature(lane)^u32(rolloutPly*0x85ebca6bu)^u32(rollout*0xc2b2ae35u);\n    loop{\n      if(accepted>=acceptedTarget||evaluated>=params.iterations||attempts>=attemptTarget){break;}\n      let opponentSeed=mix32(phase+attempts+rolloutPly*0x85ebca6bu+rollout*0xc2b2ae35u);\n      let ownSeed=mix32(stableStateSeed+attempts*0x9e3779b9u);\n      let candidateSeed=select(opponentSeed,ownSeed,ownTurn);\n      if(!ownTurn){phase=candidateSeed;}\n      let encoded=generatedCandidate(lane,side,candidateSeed);\n      let candidate=evaluateCandidate(lane,encoded,side,candidateSeed);\n'''
+          assert text.count(old)==1, f'candidate loop anchor mismatch: {text.count(old)}'
+          text=text.replace(old,new)
+
+          old='''    if(bestMove==0xffffffffu){\n      stalls=stalls+1u;\n      if(stalls>=32u){break;}\n      rollout=rollout+1u;\n      rolloutPly=0u;\n      resetPath(lane,rootEncoded);\n      transitions=transitions+1u;\n      phase=mix32(phase^rollout^0x27d4eb2du);\n      continue;\n    }\n'''
+          new='''    if(bestMove==0xffffffffu){\n      let replyExists=hasConservativeReply(lane,side,mix32(pathSignature(lane)^phase^0x27d4eb2du));\n      if(!replyExists){\n        terminalOverride=select(20000000,-20000000,side==rootSide);\n        if(!isCheck(lane,side)){terminalOverride=0;}\n        terminalSeen=true;\n        break;\n      }\n      stalls=stalls+1u;\n      if(stalls>=32u){break;}\n      rollout=rollout+1u;\n      rolloutPly=0u;\n      resetPath(lane,rootEncoded);\n      transitions=transitions+1u;\n      phase=mix32(phase^rollout^0x27d4eb2du);\n      continue;\n    }\n'''
+          assert text.count(old)==1, f'stall anchor mismatch: {text.count(old)}'
+          text=text.replace(old,new)
+
+          old='''  let average=select(evaluateFor(lane,rootSide),accumulated/i32(checkpoints),checkpoints>0u);\n'''
+          new='''  let pathAverage=select(evaluateFor(lane,rootSide),accumulated/i32(checkpoints),checkpoints>0u);\n  let average=select(pathAverage,terminalOverride,terminalSeen);\n'''
+          assert text.count(old)==1, f'average anchor mismatch: {text.count(old)}'
+          text=text.replace(old,new)
+
+          assert text.count('if(attempt>=256u){break;}')==1, 'reply breadth anchor mismatch'
+          text=text.replace('if(attempt>=256u){break;}','if(attempt>=1024u){break;}')
+          gpu.write_text(text)
+
+          cpu=Path('src/game/cpu-worker.ts')
+          text=cpu.read_text()
+          median='''function median(values:number[]):number{\n  const ordered=[...values].sort((a,b)=>a-b);\n  if(ordered.length===0)return-Infinity;\n  const middle=Math.floor(ordered.length/2);\n  return ordered.length%2?ordered[middle]!:(ordered[middle-1]!+ordered[middle]!)/2;\n}\n'''
+          helper=median+'''\nasync function settleBeforeDeadline<T>(promise:Promise<T>,deadline:number):Promise<T|null>{\n  const remaining=deadline-Date.now()-10;\n  if(remaining<=0)return null;\n  return await new Promise(resolve=>{\n    let settled=false;\n    const finish=(value:T|null)=>{\n      if(settled)return;\n      settled=true;\n      clearTimeout(timer);\n      resolve(value);\n    };\n    const timer=setTimeout(()=>finish(null),remaining);\n    promise.then(value=>finish(value)).catch(()=>finish(null));\n  });\n}\n'''
+          assert text.count(median)==1, 'median anchor mismatch'
+          text=text.replace(median,helper)
+
+          old='''function fuseGpuForecast(\n  ranked:RankedStageMove[],\n  usable:Move[],\n  forecast:TitleGpuForecastFabricResult,\n):RankedStageMove[]{\n  if(!forecast.supported||forecast.rootScores.length!==usable.length)return ranked;\n  const finite=forecast.rootScores.filter(Number.isFinite);\n  if(!finite.length)return ranked;\n  const minimum=Math.min(...finite);\n  const maximum=Math.max(...finite);\n  const span=Math.max(1,maximum-minimum);\n  const scoreByMove=new Map<string,number>();\n  usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));\n  return ranked.map(item=>{\n    const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;\n    const normalized=(gpuScore-minimum)/span;\n    const forecastBonus=Math.round((normalized-0.5)*240);\n    return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};\n  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);\n}\n'''
+          new='''function fuseGpuForecast(\n  ranked:RankedStageMove[],\n  usable:Move[],\n  forecast:TitleGpuForecastFabricResult,\n):RankedStageMove[]{\n  if(!forecast.supported||!forecast.complete||forecast.rootScores.length!==usable.length)return ranked;\n  const finite=forecast.rootScores.filter(Number.isFinite);\n  if(!finite.length)return ranked;\n  const minimum=Math.min(...finite);\n  const maximum=Math.max(...finite);\n  const span=Math.max(1,maximum-minimum);\n  const scoreByMove=new Map<string,number>();\n  usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));\n  const safeFloor=maximum-900;\n  const safe=ranked.filter(item=>item.score>=800000||(scoreByMove.get(moveKey(item.move))??minimum)>=safeFloor);\n  const pool=safe.length?safe:ranked;\n  return pool.map(item=>{\n    const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;\n    const normalized=(gpuScore-minimum)/span;\n    const forecastBonus=Math.round((normalized-0.5)*1600);\n    return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};\n  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);\n}\n'''
+          assert text.count(old)==1, f'fusion anchor mismatch: {text.count(old)}'
+          text=text.replace(old,new)
+
+          assert text.count("const fastRank=rankCpuMovesFast(position,level).map") == 1, 'fast rank anchor mismatch'
+          text=text.replace("const fastRank=rankCpuMovesFast(position,level).map","const fastRank=rankCpuMovesFast(position,level==='title'?'pro':level).map")
+
+          old='''  const deadline=Date.now()+profile.replyDeadlineMs;\n  let gpuForecast:TitleGpuForecastFabricResult|null=null;\n  if(level==='title')gpuForecast=await runTitleGpuForecastFabric(position,usable).catch(()=>null);\n\n  const slots=ensureWorkerPool(level,wasmUrl,position);\n'''
+          new='''  const hardDeadline=Date.now()+(level==='title'?1900:profile.replyDeadlineMs);\n  const deadline=Date.now()+profile.replyDeadlineMs;\n  const gpuForecastPromise:Promise<TitleGpuForecastFabricResult|null>=level==='title'\n    ?runTitleGpuForecastFabric(position,usable).catch(()=>null)\n    :Promise.resolve(null);\n\n  const slots=ensureWorkerPool(level,wasmUrl,position);\n'''
+          assert text.count(old)==1, f'gpu scheduling anchor mismatch: {text.count(old)}'
+          text=text.replace(old,new)
+
+          assert text.count('profileCode:profile.profileCode,')==1, 'profile code anchor mismatch'
+          text=text.replace('profileCode:profile.profileCode,',"profileCode:level==='title'?3:profile.profileCode,")
+
+          anchor='''  if(finalRanked.length){\n    if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);\n'''
+          replacement='''  const gpuForecast=level==='title'?await settleBeforeDeadline(gpuForecastPromise,hardDeadline):null;\n\n  if(finalRanked.length){\n    if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);\n'''
+          assert text.count(anchor)==1, f'gpu settle anchor mismatch: {text.count(anchor)}'
+          text=text.replace(anchor,replacement)
+          cpu.write_text(text)
+          PY
+      - name: Verify patch changed only intended files
+        run: |
+          git diff --check
+          git diff --name-only | sort
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/game/cpu-worker.ts src/game/title-gpu-forecast.ts "
+      - name: Commit repaired forecast
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/game/cpu-worker.ts src/game/title-gpu-forecast.ts
+          git commit -m "Repair adversarial title forecast semantics"
+          git push origin HEAD:temp/title-nwp-forecast
