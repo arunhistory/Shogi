@@ -109,6 +109,22 @@ function median(values:number[]):number{
   return ordered.length%2?ordered[middle]!:(ordered[middle-1]!+ordered[middle]!)/2;
 }
 
+async function settleBeforeDeadline<T>(promise:Promise<T>,deadline:number):Promise<T|null>{
+  const remaining=deadline-Date.now()-10;
+  if(remaining<=0)return null;
+  return await new Promise(resolve=>{
+    let settled=false;
+    const finish=(value:T|null)=>{
+      if(settled)return;
+      settled=true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer=setTimeout(()=>finish(null),remaining);
+    promise.then(value=>finish(value)).catch(()=>finish(null));
+  });
+}
+
 class RootWorkerSlot {
   private worker:Worker;
   private position:Position|null=null;
@@ -277,10 +293,13 @@ function fuseGpuForecast(
   const span=Math.max(1,maximum-minimum);
   const scoreByMove=new Map<string,number>();
   usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));
-  return ranked.map(item=>{
+  const safeFloor=maximum-900;
+  const safe=ranked.filter(item=>item.score>=800000||(scoreByMove.get(moveKey(item.move))??minimum)>=safeFloor);
+  const pool=safe.length?safe:ranked;
+  return pool.map(item=>{
     const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;
     const normalized=(gpuScore-minimum)/span;
-    const forecastBonus=Math.round((normalized-0.5)*240);
+    const forecastBonus=Math.round((normalized-0.5)*1600);
     return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};
   }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);
 }
@@ -292,7 +311,7 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
 
   const safeLegal=legal.filter(move=>safeAgainstImmediatePerpetualLoss(position,move));
   const usable=safeLegal.length?safeLegal:legal;
-  const fastRank=rankCpuMovesFast(position,level).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
+  const fastRank=rankCpuMovesFast(position,level==='title'?'pro':level).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
   let survivors=fastRank.length?fastRank:[...usable];
   const fallbackMove=chooseCpuFallbackMove(position,level);
   let bestMove:Move=fallbackMove&&usable.some(move=>sameCpuMove(move,fallbackMove))
@@ -305,9 +324,12 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     return{result:{...serial,move,logicalJobsPlanned:1,logicalJobsCompleted:1,physicalWorkers:1},wasmUsed:false};
   }
 
-  const deadline=Date.now()+profile.replyDeadlineMs;
-  let gpuForecast:TitleGpuForecastFabricResult|null=null;
-  if(level==='title')gpuForecast=await runTitleGpuForecastFabric(position,usable).catch(()=>null);
+  const searchStarted=Date.now();
+  const hardDeadline=searchStarted+(level==='title'?1900:profile.replyDeadlineMs);
+  const deadline=searchStarted+profile.replyDeadlineMs;
+  const gpuForecastPromise:Promise<TitleGpuForecastFabricResult|null>=level==='title'
+    ?runTitleGpuForecastFabric(position,usable).catch(()=>null)
+    :Promise.resolve(null);
 
   const slots=ensureWorkerPool(level,wasmUrl,position);
   let jobsIssued=0;
@@ -334,7 +356,7 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
       for(const move of survivors){
         jobs.push({
           jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
-          move,depth,nodeLimit,lane,level,profileCode:profile.profileCode,
+          move,depth,nodeLimit,lane,level,profileCode:level==='title'?3:profile.profileCode,
         });
       }
     }
@@ -365,6 +387,8 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     if(depth>=profile.maxDepth&&survivors.length===1)break;
     stage++;
   }
+
+  const gpuForecast=level==='title'?await settleBeforeDeadline(gpuForecastPromise,hardDeadline):null;
 
   if(finalRanked.length){
     if(gpuForecast?.supported&&gpuForecast.complete)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);

@@ -367,7 +367,7 @@ fn legalNoPawnMateRecursion(lane:u32,encoded:u32,side:i32)->bool{
 fn hasConservativeReply(lane:u32,side:i32,seedBase:u32)->bool{
   var attempt=0u;
   loop{
-    if(attempt>=256u){break;}
+    if(attempt>=1024u){break;}
     let seed=mix32(seedBase+attempt*0x9e3779b9u);
     let encoded=generatedCandidate(lane,side,seed);
     if(encoded!=0xffffffffu&&legalNoPawnMateRecursion(lane,encoded,side)){return true;}
@@ -420,19 +420,28 @@ fn forecast(@builtin(workgroup_id) groupId:vec3<u32>,@builtin(local_invocation_i
   var phase=mix32(params.salt^pathIndex^rootEncoded);
   var accumulated=0;
   var checkpoints=0u;
+  var terminalOverride=0;
+  var terminalSeen=false;
 
   loop{
     if(evaluated>=params.iterations){break;}
     let side=getState(lane,95u);
+    let ownTurn=side==rootSide;
+    let acceptedTarget=select(8u,16u,ownTurn);
+    let attemptTarget=select(192u,384u,ownTurn);
     var bestMove=0xffffffffu;
     var bestScore=-20000000;
     var accepted=0u;
     var attempts=0u;
+    let stableStateSeed=pathSignature(lane)^u32(rolloutPly*0x85ebca6bu)^u32(rollout*0xc2b2ae35u);
     loop{
-      if(accepted>=4u||evaluated>=params.iterations||attempts>=96u){break;}
-      phase=mix32(phase+attempts+rolloutPly*0x85ebca6bu+rollout*0xc2b2ae35u);
-      let encoded=generatedCandidate(lane,side,phase);
-      let candidate=evaluateCandidate(lane,encoded,side,phase);
+      if(accepted>=acceptedTarget||evaluated>=params.iterations||attempts>=attemptTarget){break;}
+      let opponentSeed=mix32(phase+attempts+rolloutPly*0x85ebca6bu+rollout*0xc2b2ae35u);
+      let ownSeed=mix32(stableStateSeed+attempts*0x9e3779b9u);
+      let candidateSeed=select(opponentSeed,ownSeed,ownTurn);
+      if(!ownTurn){phase=candidateSeed;}
+      let encoded=generatedCandidate(lane,side,candidateSeed);
+      let candidate=evaluateCandidate(lane,encoded,side,candidateSeed);
       if(candidate.valid==1u){
         evaluated=evaluated+1u;
         accepted=accepted+1u;
@@ -445,6 +454,13 @@ fn forecast(@builtin(workgroup_id) groupId:vec3<u32>,@builtin(local_invocation_i
     }
 
     if(bestMove==0xffffffffu){
+      let replyExists=hasConservativeReply(lane,side,mix32(pathSignature(lane)^phase^0x27d4eb2du));
+      if(!replyExists){
+        terminalOverride=select(20000000,-20000000,side==rootSide);
+        if(!isCheck(lane,side)){terminalOverride=0;}
+        terminalSeen=true;
+        break;
+      }
       stalls=stalls+1u;
       if(stalls>=32u){break;}
       rollout=rollout+1u;
@@ -471,7 +487,8 @@ fn forecast(@builtin(workgroup_id) groupId:vec3<u32>,@builtin(local_invocation_i
     }
   }
 
-  let average=select(evaluateFor(lane,rootSide),accumulated/i32(checkpoints),checkpoints>0u);
+  let pathAverage=select(evaluateFor(lane,rootSide),accumulated/i32(checkpoints),checkpoints>0u);
+  let average=select(pathAverage,terminalOverride,terminalSeen);
   let outputBase=pathIndex*${OUTPUT_WORDS_PER_PATH}u;
   output[outputBase]=bitcast<u32>(average);
   output[outputBase+1u]=pathSignature(lane)^0x5a170000u^(pathIndex+1u);
