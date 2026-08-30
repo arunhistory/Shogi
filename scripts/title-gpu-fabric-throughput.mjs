@@ -115,19 +115,22 @@ try{
     const gpuForecast=await import('/src/game/title-gpu-forecast.ts');
     const position=engine.initialPosition();
     const moves=engine.legalMoves(position);
-    const warmed=await gpuForecast.warmupTitleGpuForecastFabric();
-    if(!warmed)return{supported:false,reason:'WEBGPU_UNAVAILABLE'};
-    await gpuForecast.runTitleGpuForecastFabric(position,moves);
+    await gpuForecast.warmupTitleGpuForecastFabric();
     return await gpuForecast.runTitleGpuForecastFabric(position,moves);
   })()`);
 
   assert(result&&result.supported===true,`GPU_FABRIC_UNAVAILABLE:${result?.reason??'UNKNOWN'}`);
   assert(result.layers===500,`GPU_FABRIC_LAYER_COUNT:${result.layers}`);
   assert(result.lanesPerLayer===64,`GPU_FABRIC_LANE_COUNT:${result.lanesPerLayer}`);
-  assert(result.totalSamples===100000000,`GPU_FABRIC_SAMPLE_COUNT:${result.totalSamples}`);
-  assert(result.signaturesChecked===500,`GPU_FABRIC_INCOMPLETE:${result.signaturesChecked}`);
+  assert(result.samplesPerLane===3125,`GPU_FABRIC_PER_PATH_TARGET:${result.samplesPerLane}`);
+  assert(result.plannedSamples===100000000,`GPU_FABRIC_PLANNED_COUNT:${result.plannedSamples}`);
+  assert(result.totalSamples===100000000,`GPU_FUTURE_POSITION_COUNT:${result.totalSamples}`);
+  assert(result.signaturesChecked===32000,`GPU_PATH_SIGNATURE_COUNT:${result.signaturesChecked}`);
+  assert(result.stateTransitions>32000,`GPU_STATE_TRANSITIONS:${result.stateTransitions}`);
+  assert(result.complete===true,`GPU_FUTURE_STATE_INCOMPLETE:${result.totalSamples}/${result.plannedSamples}`);
+  assert(Array.isArray(result.rootScores)&&result.rootScores.length===engine.legalMoves(position).length,`GPU_ROOT_COVERAGE:${result.rootScores?.length}`);
   assert(Number.isFinite(result.elapsedMs)&&result.elapsedMs>0,'GPU_FABRIC_TIME_INVALID');
-  console.log('TITLE_GPU_FABRIC:'+JSON.stringify(result));
+  console.log('TITLE_GPU_FUTURE_STATES:'+JSON.stringify(result));
 }finally{
   cdp?.close();
   await stopChild(chrome);
