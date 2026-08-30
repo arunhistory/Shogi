@@ -37,6 +37,18 @@ async function waitForHttp(url,timeoutMs=20000){
   throw new Error(`HTTP_TIMEOUT:${url}`);
 }
 
+async function withTimeout(promise,timeoutMs,label){
+  let timer;
+  try{
+    return await Promise.race([
+      promise,
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label}:${timeoutMs}`)),timeoutMs);}),
+    ]);
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
 class CdpClient{
   constructor(socket){
     this.socket=socket;
@@ -111,7 +123,7 @@ try{
   cdp=await CdpClient.connect(page.webSocketDebuggerUrl);
   await cdp.send('Runtime.enable');
 
-  const result=await evaluate(cdp,`(async()=>{
+  const result=await withTimeout(evaluate(cdp,`(async()=>{
     const engine=await import('${appUrl}src/game/engine.ts');
     const gpuForecast=await import('${appUrl}src/game/title-gpu-forecast.ts');
     const position=engine.initialPosition();
@@ -119,7 +131,7 @@ try{
     await gpuForecast.warmupTitleGpuForecastFabric();
     const forecast=await gpuForecast.runTitleGpuForecastFabric(position,moves);
     return{...forecast,legalMoveCount:moves.length};
-  })()`);
+  })()`),10000,'GPU_FUTURE_STATE_TIMEOUT');
 
   assert(result&&result.supported===true,`GPU_FABRIC_UNAVAILABLE:${result?.reason??'UNKNOWN'}`);
   assert(result.layers===500,`GPU_FABRIC_LAYER_COUNT:${result.layers}`);
@@ -132,6 +144,7 @@ try{
   assert(result.complete===true,`GPU_FUTURE_STATE_INCOMPLETE:${result.totalSamples}/${result.plannedSamples}`);
   assert(Array.isArray(result.rootScores)&&result.rootScores.length===result.legalMoveCount,`GPU_ROOT_COVERAGE:${result.rootScores?.length}/${result.legalMoveCount}`);
   assert(Number.isFinite(result.elapsedMs)&&result.elapsedMs>0,'GPU_FABRIC_TIME_INVALID');
+  assert(result.elapsedMs<2000,`GPU_FUTURE_STATE_OVER_2S:${result.elapsedMs}`);
   console.log('TITLE_GPU_FUTURE_STATES:'+JSON.stringify(result));
 }finally{
   cdp?.close();
