@@ -5,6 +5,7 @@ on:
       - 'cpp/**'
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
+      - 'scripts/test-future-search.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
@@ -18,6 +19,7 @@ on:
       - 'cpp/**'
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
+      - 'scripts/test-future-search.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
@@ -43,6 +45,8 @@ jobs:
         run: test -s public/wasm/shogi_engine.wasm
       - name: Test WebAssembly runtime
         run: node scripts/test-wasm.mjs
+      - name: Test title future-state search
+        run: node scripts/test-future-search.mjs
       - uses: actions/setup-node@v7
         with:
           node-version: 22
