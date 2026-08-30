@@ -1,0 +1,82 @@
+name: title-82win-eval-opt
+
+on:
+  push:
+    branches:
+      - 'optimize-title-82win-eval'
+    paths:
+      - '.github/workflows/title-82win-eval-opt.yml'
+      - 'scripts/temp-patch-title-eval-snapshot-speed.mjs'
+      - 'scripts/temp-title-parallel-equivalence.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  optimize-and-selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-82win-eval
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install application dependencies
+        run: npm ci
+      - name: Build untouched 82-win baseline engine
+        run: |
+          sh scripts/build-wasm.sh
+          cp public/wasm/shogi_engine.wasm /tmp/title-82win-baseline.wasm
+          node scripts/temp-title-parallel-equivalence.mjs /tmp/title-82win-baseline.wasm /tmp/title-82win-baseline.json
+      - name: Apply evaluation scan deduplication
+        run: node scripts/temp-patch-title-eval-snapshot-speed.mjs
+      - name: Build optimized engine
+        run: |
+          sh scripts/build-wasm.sh
+          node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-82win-optimized.json
+      - name: Require exact Title search equivalence
+        run: |
+          diff -u /tmp/title-82win-baseline.json /tmp/title-82win-optimized.json
+          echo 'TITLE_SEARCH_EQUIVALENCE:PASS'
+      - name: Apply exact 82-win runtime route
+        run: |
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
+      - name: Build optimized 82-win variant
+        run: |
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Run three Title-gote versus Pro-sente trials
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "TITLE_OPT_TRIAL:${i}"
+            node scripts/title-selfplay-one.mjs 2 | tee "/tmp/title-opt-${i}.log"
+          done
+      - name: Require faster Title win within 82 plies
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const baselineMaxMs=2699.9000000000233;
+          const results=[];
+          for(let i=1;i<=3;i++){
+            const text=await readFile(`/tmp/title-opt-${i}.log`,'utf8');
+            const line=text.split(/\r?\n/).find(value=>value.startsWith('SELFPLAY_RESULT:'));
+            if(!line)throw new Error(`MISSING_SELFPLAY_RESULT:${i}`);
+            const result=JSON.parse(line.slice('SELFPLAY_RESULT:'.length));
+            const success=result.result==='title-win'&&result.titleSide==='gote'&&result.proSide==='sente'&&result.plies<=82&&result.titleMaxReplyMs<baselineMaxMs;
+            results.push({trial:i,success,result:result.result,plies:result.plies,titleMaxReplyMs:result.titleMaxReplyMs,titleNodes:result.titleNodes,titleJobs:result.titleJobs});
+          }
+          const winners=results.filter(result=>result.success).sort((a,b)=>a.titleMaxReplyMs-b.titleMaxReplyMs||a.plies-b.plies);
+          console.log(`TITLE_OPT_SUMMARY:${JSON.stringify({baselineMaxMs,results,best:winners[0]??null})}`);
+          if(!winners.length)process.exit(1);
+          JS
