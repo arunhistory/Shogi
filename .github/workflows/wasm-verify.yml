@@ -6,6 +6,7 @@ on:
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
       - 'scripts/test-future-search.mjs'
+      - 'scripts/test-forecast-memory.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
@@ -20,6 +21,7 @@ on:
       - 'scripts/build-wasm.sh'
       - 'scripts/test-wasm.mjs'
       - 'scripts/test-future-search.mjs'
+      - 'scripts/test-forecast-memory.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
@@ -47,6 +49,8 @@ jobs:
         run: node scripts/test-wasm.mjs
       - name: Test title future-state search
         run: node scripts/test-future-search.mjs
+      - name: Test forecast memory assimilation
+        run: node scripts/test-forecast-memory.mjs
       - uses: actions/setup-node@v7
         with:
           node-version: 22
