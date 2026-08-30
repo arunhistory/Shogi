@@ -89,24 +89,23 @@ FutureBudget future_child_budget(
   int next_hand = hand_credits;
   int next_check = check_credits;
   const bool captured = future_capture(pos, move);
-  const bool dropped = move.drop > 0;
   const bool gave_check = is_check(next, next.turn);
 
-  // Captures create a new reusable piece. Two extra plies ensure the search
-  // reaches the capturing side's next turn, where that newly acquired piece
-  // can actually be dropped. A drop consumes that future resource and gets
-  // one extra reply ply so its consequences are not cut at the horizon.
+  // A capture creates a reusable hand piece. Two extra plies are the minimum
+  // needed to reach the capturing side's next turn and enumerate every legal
+  // board move and every legal drop made possible by the newly acquired hand.
+  // The drop itself is not extended again: doing so lets a single hand branch
+  // monopolize the node budget instead of comparing the other real futures.
   if (captured && next_hand >= 2) {
     extension = 2;
     next_hand -= 2;
-  } else if ((captured || dropped) && next_hand > 0) {
+  } else if (captured && next_hand > 0) {
     extension = 1;
     --next_hand;
   }
 
-  // Checks are also horizon-sensitive in shogi because a checking sequence
-  // can end in a hand drop. Do not stack more than one extra check ply on top
-  // of a hand event in the same move.
+  // Checks remain horizon-sensitive, but never stack another ply on a capture
+  // that already received the hand-use extension.
   if (gave_check && next_check > 0) {
     if (extension == 0) extension = 1;
     --next_check;
@@ -143,11 +142,14 @@ int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qde
     Position next;
     apply_move(pos, move, next);
     const bool checking = is_check(next, next.turn);
+    // Hand drops have already been enumerated by the full-width future node.
+    // At the horizon, only genuinely tactical drops (checks) continue, just as
+    // captures and promotions do. This avoids recursively expanding every
+    // quiet drop and starving sibling futures of their node share.
     const bool tactical = checked
       || future_capture(pos, move)
       || move.promote
-      || checking
-      || (move.drop > 0 && qdepth == 0);
+      || checking;
     if (!tactical) continue;
     if (!push_search_history(next, pos.turn)) {
       g_parallel_complete = false;
