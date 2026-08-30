@@ -224,6 +224,13 @@ function titleRankPercentiles(stats:TitleChannelStat[],channel:'stableScore'|'co
   return result;
 }
 
+function stableSafetyTier(rank:number):number{
+  if(rank>=0.75)return 3;
+  if(rank>=0.50)return 2;
+  if(rank>=0.25)return 1;
+  return 0;
+}
+
 function rankTitleStageResults(candidates:Move[],completed:CompletedJob[]):RankedStageMove[]{
   const byMove=new Map<string,CompletedJob[]>();
   for(const item of completed){
@@ -272,18 +279,24 @@ function rankTitleStageResults(candidates:Move[],completed:CompletedJob[]):Ranke
       consensus=10_000_000;
     }else if(stableMate){
       consensus=9_000_000+(complex??0)*100_000;
-    }else if(complexMate){
-      consensus=8_500_000+(stable??0)*100_000;
+    }else if(complexMate&&stable!==undefined&&stable>=0.50){
+      consensus=8_500_000+stable*100_000;
     }else if(stable!==undefined&&complex!==undefined){
+      const tier=stableSafetyTier(stable);
       const floor=Math.min(stable,complex);
       const agreement=1-Math.abs(stable-complex);
-      consensus=(stable*0.50+complex*0.30+floor*0.15+agreement*0.05)*1_000_000;
+      consensus=tier*1_000_000
+        + stable*250_000
+        + complex*80_000
+        + floor*60_000
+        + agreement*10_000;
+    }else if(stable!==undefined){
+      consensus=stableSafetyTier(stable)*1_000_000+stable*200_000-90_000;
     }else{
-      const single=stable??complex??0;
-      consensus=single*650_000-250_000;
+      consensus=(complex??0)*100_000-1_000_000;
     }
-    if(!item.stableComplete)consensus-=18_000;
-    if(!item.complexComplete)consensus-=18_000;
+    if(!item.stableComplete)consensus-=35_000;
+    if(!item.complexComplete)consensus-=12_000;
     ranked.push({move:item.move,score:consensus,depth:item.depth,nodes:item.nodes,wasm:item.wasm});
   }
   return ranked.sort((a,b)=>b.score-a.score||b.depth-a.depth||b.nodes-a.nodes);
@@ -357,8 +370,8 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     const jobs:RootSearchJob[]=[];
     const analysisProfiles=level==='title'?[3,4]:[profile.profileCode];
     outer:for(let lane=0;lane<laneCount;lane++){
-      for(const analysisProfile of analysisProfiles){
-        for(const move of survivors){
+      for(const move of survivors){
+        for(const analysisProfile of analysisProfiles){
           jobs.push({
             jobId:`${stage}-${lane}-${analysisProfile}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
             move,depth,nodeLimit,lane,level,profileCode:analysisProfile,
