@@ -10,12 +10,6 @@ function replaceOnce(source,oldText,newText,label){
 
 build=replaceOnce(
   build,
-  'emcc cpp/engine_future.cpp \\\n',
-  'emcc cpp/engine_parallel.cpp \\\n',
-  'ENGINE_ENTRY',
-);
-build=replaceOnce(
-  build,
   '  -Wl,--export=shogi_search_future_root_move_with_history \\\n',
   '',
   'FUTURE_EXPORT',
