@@ -1,11 +1,12 @@
-name: temp-title-vs-pro-one
+name: temp-title-pro-strength-one
 
 on:
   push:
     branches:
-      - 'temp/title-nwp-forecast'
+      - 'temp/title-pro-strength'
     paths:
       - '.github/workflows/temp-title-future-selfplay.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: temp/title-nwp-forecast
+          ref: temp/title-pro-strength
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -30,7 +31,35 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Build application
+      - name: Patch strength-isolation variant in runner
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('scripts/title-selfplay-one.mjs')
+          s=p.read_text()
+          old="'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',"
+          if old not in s:
+              raise SystemExit('GPU_FLAGS_NOT_FOUND')
+          p.write_text(s.replace(old,"'--disable-gpu',",1))
+
+          p=Path('src/game/cpu.ts')
+          s=p.read_text()
+          old="title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:455,baseDepth:3,maxDepth:12,depthStep:2,lanes:5,retention:0.38,minSurvivors:4,nodeBase:4200,jobTimeoutMs:420,profileCode:4,openingVariationWindow:0,variationWindow:0,variationPool:1},"
+          new="title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:455,baseDepth:3,maxDepth:12,depthStep:1,lanes:5,retention:0.38,minSurvivors:4,nodeBase:4200,jobTimeoutMs:420,profileCode:4,openingVariationWindow:0,variationWindow:0,variationPool:1},"
+          if old not in s:
+              raise SystemExit('TITLE_PROFILE_NOT_FOUND')
+          p.write_text(s.replace(old,new,1))
+
+          p=Path('src/game/cpu-worker.ts')
+          s=p.read_text()
+          old="""    const ranked=rankStageResults(survivors,completed,level);\n    if(ranked.length){"""
+          new="""    const ranked=rankStageResults(survivors,completed,level);\n    if(level==='title'&&(ranked.length!==survivors.length||ranked.some(item=>item.completeSamples===0)))break;\n    if(ranked.length){"""
+          if old not in s:
+              raise SystemExit('TITLE_STAGE_ANCHOR_NOT_FOUND')
+          p.write_text(s.replace(old,new,1))
+          PY
+      - name: Build strength variant
         run: npm run build
-      - name: Run title GPU versus pro CPU as gote
+      - name: Run title versus pro as gote
         run: node scripts/title-selfplay-one.mjs 2
