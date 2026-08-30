@@ -1,0 +1,64 @@
+name: temp-title-optimize-win-v2
+
+on:
+  push:
+    branches:
+      - 'temp/title-optimize-win-v2'
+    paths:
+      - '.github/workflows/temp-title-optimize-win-v2.yml'
+      - 'scripts/temp-strip-winning-unused-future.mjs'
+      - 'scripts/temp-title-parallel-equivalence.mjs'
+      - 'scripts/temp-patch-title-tempo.mjs'
+      - 'scripts/temp-patch-title-parallel-engine.mjs'
+      - 'scripts/build-wasm.sh'
+      - 'src/game/wasm.ts'
+      - 'cpp/**'
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-equivalence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: temp/title-optimize-win-v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install dependencies
+        run: npm ci
+      - name: Build untouched 82-win baseline engine
+        run: |
+          sh scripts/build-wasm.sh
+          echo "BASELINE_WASM_BYTES=$(stat -c%s public/wasm/shogi_engine.wasm)"
+          echo "BASELINE_WASM_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)"
+          node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-baseline.json
+      - name: Remove only unused future exports
+        run: node scripts/temp-strip-winning-unused-future.mjs
+      - name: Build lightweight engine
+        run: |
+          sh scripts/build-wasm.sh
+          echo "OPTIMIZED_WASM_BYTES=$(stat -c%s public/wasm/shogi_engine.wasm)"
+          echo "OPTIMIZED_WASM_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)"
+          node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-optimized.json
+      - name: Require exact Title brain equivalence
+        run: |
+          diff -u /tmp/title-baseline.json /tmp/title-optimized.json
+          echo 'TITLE_BRAIN_EQUIVALENCE:PASS'
+      - name: Reapply exact winning runtime route
+        run: |
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Verify optimized application and engine
+        run: |
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
