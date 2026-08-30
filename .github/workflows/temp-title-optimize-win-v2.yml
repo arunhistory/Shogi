@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/temp-title-optimize-win-v2.yml'
       - 'scripts/temp-strip-winning-unused-future.mjs'
+      - 'scripts/temp-use-winning-parallel-entry.mjs'
       - 'scripts/temp-title-parallel-equivalence.mjs'
       - 'scripts/temp-patch-title-tempo.mjs'
       - 'scripts/temp-patch-title-parallel-engine.mjs'
@@ -43,16 +44,28 @@ jobs:
           node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-baseline.json
       - name: Remove only unused future exports
         run: node scripts/temp-strip-winning-unused-future.mjs
-      - name: Build lightweight engine
+      - name: Build export-stripped engine
         run: |
           sh scripts/build-wasm.sh
-          echo "OPTIMIZED_WASM_BYTES=$(stat -c%s public/wasm/shogi_engine.wasm)"
-          echo "OPTIMIZED_WASM_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)"
-          node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-optimized.json
-      - name: Require exact Title brain equivalence
+          echo "STRIPPED_WASM_BYTES=$(stat -c%s public/wasm/shogi_engine.wasm)"
+          echo "STRIPPED_WASM_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)"
+          node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-stripped.json
+      - name: Require exact stripped Title brain equivalence
         run: |
-          diff -u /tmp/title-baseline.json /tmp/title-optimized.json
-          echo 'TITLE_BRAIN_EQUIVALENCE:PASS'
+          diff -u /tmp/title-baseline.json /tmp/title-stripped.json
+          echo 'TITLE_STRIPPED_BRAIN_EQUIVALENCE:PASS'
+      - name: Compile directly from winning parallel engine
+        run: node scripts/temp-use-winning-parallel-entry.mjs
+      - name: Build direct-parallel engine
+        run: |
+          sh scripts/build-wasm.sh
+          echo "DIRECT_WASM_BYTES=$(stat -c%s public/wasm/shogi_engine.wasm)"
+          echo "DIRECT_WASM_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)"
+          node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-direct.json
+      - name: Require exact direct-entry Title brain equivalence
+        run: |
+          diff -u /tmp/title-baseline.json /tmp/title-direct.json
+          echo 'TITLE_DIRECT_BRAIN_EQUIVALENCE:PASS'
       - name: Reapply exact winning runtime route
         run: |
           node scripts/temp-patch-title-tempo.mjs
