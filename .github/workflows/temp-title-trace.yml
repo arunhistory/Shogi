@@ -1,4 +1,4 @@
-name: temp-title-vs-pro-broad-first
+name: temp-title-vs-pro-integrated-root
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  broad-first:
+  integrated-root:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -30,53 +30,38 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Isolate CPU and apply broad-first title search
+      - name: Patch runner to use integrated title root search
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           p=Path('scripts/title-selfplay-one.mjs')
           s=p.read_text()
-          old="'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',"
-          if old not in s:
-              raise SystemExit('GPU_FLAGS_NOT_FOUND')
-          p.write_text(s.replace(old,"'--disable-gpu',",1))
 
-          p=Path('src/game/cpu-worker.ts')
-          s=p.read_text()
-          replacements=[
-            (
-              "  if(stage<2)return ranked.map(item=>item.move);",
-              "  if(stage===0)return ranked.slice(0,Math.min(ranked.length,16)).map(item=>item.move);\n  if(stage===1)return ranked.slice(0,Math.min(ranked.length,8)).map(item=>item.move);"
-            ),
-            (
-              "  const desired=[2,3,4,6,8,12][Math.min(stage,5)]??12;",
-              "  const desired=[1,1,2,4,6,8][Math.min(stage,5)]??8;"
-            ),
-            (
-              "    const depth=Math.min(profile.maxDepth,profile.baseDepth+stage*profile.depthStep);",
-              "    const depth=level==='title'?Math.min(profile.maxDepth,1+stage*2):Math.min(profile.maxDepth,profile.baseDepth+stage*profile.depthStep);"
-            ),
-            (
-              "    const nodeLimit=Math.min(220_000,Math.trunc(profile.nodeBase*Math.pow(growth,stage)));",
-              "    const nodeLimit=level==='title'&&stage===0?1200:Math.min(220_000,Math.trunc(profile.nodeBase*Math.pow(growth,stage)));"
-            ),
-            (
-              "    const completed=await runStage(slots,jobs,deadline,profile.jobTimeoutMs);",
-              "    const stageJobTimeout=level==='title'&&stage===0?90:profile.jobTimeoutMs;\n    const completed=await runStage(slots,jobs,deadline,stageJobTimeout);"
-            ),
-            (
-              "    const ranked=rankStageResults(survivors,completed,level);\n    if(ranked.length){",
-              "    const ranked=rankStageResults(survivors,completed,level);\n    if(level==='title'&&ranked.length!==survivors.length)break;\n    if(ranked.length){"
-            ),
-          ]
-          for old,new in replacements:
-              if old not in s:
-                  raise SystemExit('PATCH_ANCHOR_NOT_FOUND:'+old)
-              s=s.replace(old,new,1)
+          gpu="'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',"
+          if gpu not in s:
+              raise SystemExit('GPU_FLAGS_NOT_FOUND')
+          s=s.replace(gpu,"'--disable-gpu',",1)
+
+          import_anchor="    const engine=await import('/src/game/engine.ts');\n    const wasmUrl=new URL('/wasm/shogi_engine.wasm',location.origin).toString();"
+          import_replacement="    const engine=await import('/src/game/engine.ts');\n    const wasmModule=await import('/src/game/wasm.ts');\n    const wasmUrl=new URL('/wasm/shogi_engine.wasm',location.origin).toString();\n    const integratedTitle=await wasmModule.loadWasmShogiEngine(wasmUrl);\n    if(!integratedTitle)throw new Error('INTEGRATED_TITLE_WASM_UNAVAILABLE');"
+          if import_anchor not in s:
+              raise SystemExit('WASM_IMPORT_ANCHOR_NOT_FOUND')
+          s=s.replace(import_anchor,import_replacement,1)
+
+          search_anchor="    const search=(worker,level,pos)=>new Promise((resolve,reject)=>{"
+          if search_anchor not in s:
+              raise SystemExit('SEARCH_ANCHOR_NOT_FOUND')
+          s=s.replace(search_anchor,"    const workerSearch=(worker,level,pos)=>new Promise((resolve,reject)=>{",1)
+
+          warmup_anchor="    titleWorker.postMessage({type:'warmup',position,level:'title',wasmUrl});"
+          wrapper="""    const search=async(worker,level,pos)=>{\n      if(level==='title'){\n        const started=performance.now();\n        const direct=integratedTitle.searchBestMove(pos,12,1000000);\n        if(!direct.move)throw new Error('INTEGRATED_TITLE_NO_MOVE');\n        return{\n          result:{\n            move:direct.move,nodesVisited:Number(direct.nodesVisited??0),\n            logicalJobsCompleted:1,completedDepth:0,\n            gpuForecastUsed:false,gpuForecastSamples:0,gpuForecastLayers:0,gpuForecastMs:0,\n          },\n          elapsedMs:performance.now()-started,\n        };\n      }\n      return workerSearch(worker,level,pos);\n    };\n    // Integrated title search owns its WASM instance and needs no title worker warmup."""
+          if warmup_anchor not in s:
+              raise SystemExit('TITLE_WARMUP_ANCHOR_NOT_FOUND')
+          s=s.replace(warmup_anchor,wrapper,1)
           p.write_text(s)
           PY
       - name: Build A/B variant
         run: npm run build
-      - name: Run broad-first title versus pro as gote
+      - name: Run integrated title versus pro as gote
         run: node scripts/title-selfplay-one.mjs 2
