@@ -9,6 +9,8 @@ on:
       - 'scripts/test-forecast-memory.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
       - 'scripts/title-forecast-throughput.mjs'
+      - 'scripts/title-gpu-fabric-throughput.mjs'
+      - 'src/game/title-gpu-forecast.ts'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -25,6 +27,8 @@ on:
       - 'scripts/test-forecast-memory.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
       - 'scripts/title-forecast-throughput.mjs'
+      - 'scripts/title-gpu-fabric-throughput.mjs'
+      - 'src/game/title-gpu-forecast.ts'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -65,3 +69,5 @@ jobs:
         run: node scripts/cpu-latency-smoke.mjs
       - name: Measure actual title forecast throughput
         run: node scripts/title-forecast-throughput.mjs
+      - name: Verify 500-layer WebGPU forecast fabric
+        run: node scripts/title-gpu-fabric-throughput.mjs
