@@ -233,6 +233,78 @@ int attack_commitment_exposure(const Position& pos, int side) {
   return exposure;
 }
 
+struct TitleSideMetrics {
+  int king_safety = -kMateScore / 2;
+  int king_net = kMateScore / 2;
+  int exposure = 100;
+};
+
+TitleSideMetrics title_side_metrics(const Position& pos, int defender_side) {
+  TitleSideMetrics metrics;
+  const int king = king_square_for_side(pos, defender_side);
+  if (king < 0) return metrics;
+
+  const int ky = row_of(king), kx = col_of(king);
+  int shield = 0;
+  int danger = 0;
+  int attacked_ring = 0;
+  int attack_contacts = 0;
+  int escape_like = 0;
+
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dy == 0 && dx == 0) continue;
+      const int y = ky + dy, x = kx + dx;
+      if (!inside(y, x)) continue;
+      const int target = square_of(y, x);
+      const int occupant = pos.board[target];
+      const int contacts = attack_count_on_square(pos, -defender_side, target);
+      danger += contacts;
+      if (contacts > 0) ++attacked_ring;
+      attack_contacts += contacts > 3 ? 3 : contacts;
+      if (contacts == 0 && sign_of(occupant) != defender_side) ++escape_like;
+      if (sign_of(occupant) == defender_side) {
+        const int kind = kind_of(occupant);
+        if (kind == 5 || kind == 9 || kind == 10 || kind == 11 || kind == 12) shield += 3;
+        else if (kind == 4) shield += 2;
+        else if (kind != 8) shield += 1;
+      }
+    }
+  }
+
+  const bool home_rank = defender_side == 1 ? ky >= 7 : ky <= 1;
+  const int edge_distance = abs_i(kx - 4);
+  metrics.king_safety = shield * 8 + (home_rank ? 18 : 0) + edge_distance * 4 - danger * 13;
+  metrics.king_net = attacked_ring * 55 + attack_contacts * 14 - escape_like * 45 - shield * 12;
+  if (is_check(pos, defender_side)) metrics.king_net += 420;
+
+  int exposure = 0;
+  for (int square = 0; square < kBoardSquares; ++square) {
+    const int code = pos.board[square];
+    if (sign_of(code) != defender_side) continue;
+    const int kind = kind_of(code);
+    if (kind == 8 || kind == 1) continue;
+    const int y = row_of(square), x = col_of(square);
+    const int progress = defender_side == 1 ? 8 - y : y;
+    const int distance = abs_i(y - ky) + abs_i(x - kx);
+    if (progress < 4 || distance < 3) continue;
+    int weight = 2;
+    if (kind == 7 || kind == 14) weight = 5;
+    else if (kind == 6 || kind == 13) weight = 4;
+    else if (kind == 4 || kind == 5 || kind == 9 || kind == 10 || kind == 11 || kind == 12) weight = 3;
+    exposure += (progress - 3) * weight + (distance > 3 ? distance - 3 : 0);
+  }
+  metrics.exposure = exposure;
+  return metrics;
+}
+
+int title_strategic_side_score(const Position& pos, int side, const TitleSideMetrics& metrics) {
+  return metrics.king_safety
+    + major_activity(pos, side) * 4
+    + hand_initiative(pos, side) * 3 / 4
+    + promoted_invasion(pos, side) * 2;
+}
+
 int mating_pressure_score(const Position& pos, int attacker_side) {
   if (g_parallel_profile < 3) return 0;
   const int defender_side = -attacker_side;
@@ -244,11 +316,19 @@ int mating_pressure_score(const Position& pos, int attacker_side) {
 int parallel_evaluate_for(const Position& pos, int perspective) {
   const int base = evaluate_for(pos, perspective);
   if (g_parallel_profile <= 1) return base;
+  if (g_parallel_profile >= 4) {
+    const TitleSideMetrics own = title_side_metrics(pos, perspective);
+    const TitleSideMetrics opponent = title_side_metrics(pos, -perspective);
+    const int strategic = title_strategic_side_score(pos, perspective, own)
+      - title_strategic_side_score(pos, -perspective, opponent);
+    const int mating = (opponent.king_net + opponent.exposure * 6)
+      - (own.king_net + own.exposure * 6);
+    return base + strategic / 3 + mating * 2;
+  }
   const int strategic = strategic_side_score(pos, perspective) - strategic_side_score(pos, -perspective);
   if (g_parallel_profile == 2) return base + strategic;
   const int mating = mating_pressure_score(pos, perspective) - mating_pressure_score(pos, -perspective);
-  if (g_parallel_profile == 3) return base + strategic / 2 + mating * 3 / 2;
-  return base + strategic / 3 + mating * 2;
+  return base + strategic / 2 + mating * 3 / 2;
 }
 
 void order_parallel_moves(const Position& pos, MoveList& list, int32_t tt_move, int ply, bool include_quiet_pressure) {
