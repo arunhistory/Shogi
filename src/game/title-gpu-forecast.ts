@@ -129,7 +129,7 @@ fn mix32(value:u32)->u32{
 
 fn applyRootMove(encoded:u32){
   let to=encoded&0x7fu;
-  let from=(encoded>>7u)&0x7fu;
+  let source=(encoded>>7u)&0x7fu;
   let drop=(encoded>>14u)&0x0fu;
   let promote=((encoded>>18u)&1u)==1u;
   let side=sharedState[95];
@@ -140,7 +140,7 @@ fn applyRootMove(encoded:u32){
     let handIndex=offset+(drop-1u);
     sharedState[handIndex]=sharedState[handIndex]-1;
   }else{
-    let piece=sharedState[from];
+    let piece=sharedState[source];
     let captured=sharedState[to];
     if(captured!=0){
       let kind=baseKind(absCode(captured));
@@ -151,7 +151,7 @@ fn applyRootMove(encoded:u32){
     }
     var kind=absCode(piece);
     if(promote){kind=promotedKind(kind);}
-    sharedState[from]=0;
+    sharedState[source]=0;
     sharedState[to]=side*i32(kind);
   }
   sharedState[95]=-side;
@@ -179,7 +179,7 @@ fn forecast(
   }
   workgroupBarrier();
 
-  var x=mix32(params.salt^(layer+1u)*0x9e3779b9u^(lane+1u)*0x85ebca6bu);
+  var x=mix32(params.salt^((layer+1u)*0x9e3779b9u)^((lane+1u)*0x85ebca6bu));
   var acc=x^(layer<<16u)^lane;
   var iteration=0u;
   loop{
