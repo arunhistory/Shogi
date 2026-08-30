@@ -1,22 +1,23 @@
-name: temp-title-future-selfplay
+name: temp-title-vs-pro-one
 
 on:
   push:
     branches:
-      - 'temp/title-shogi-future-search'
+      - 'temp/title-nwp-forecast'
     paths:
       - '.github/workflows/temp-title-future-selfplay.yml'
+
+permissions:
+  contents: read
 
 jobs:
   selfplay:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        game: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: temp/title-nwp-forecast
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -29,5 +30,5 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Run title vs pro game
-        run: node scripts/title-selfplay-one.mjs ${{ matrix.game }}
+      - name: Run title versus pro
+        run: node scripts/title-selfplay-one.mjs 1
