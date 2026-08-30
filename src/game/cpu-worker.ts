@@ -80,6 +80,17 @@ interface RankedStageMove {
   wasm:boolean;
 }
 
+interface TitleChannelStat {
+  move:Move;
+  stableScore?:number;
+  complexScore?:number;
+  depth:number;
+  nodes:number;
+  wasm:boolean;
+  stableComplete:boolean;
+  complexComplete:boolean;
+}
+
 const moveKey=(move:Move)=>`${move.from?.[0]??-1},${move.from?.[1]??-1}>${move.to[0]},${move.to[1]}|${move.drop??''}|${move.promote?1:0}`;
 
 function safeAgainstImmediatePerpetualLoss(position:Position,move:Move):boolean{
@@ -198,7 +209,88 @@ async function runStage(
   return completed;
 }
 
+function titleRankPercentiles(stats:TitleChannelStat[],channel:'stableScore'|'complexScore'):Map<string,number>{
+  const available=stats.filter(item=>Number.isFinite(item[channel]));
+  available.sort((a,b)=>(b[channel]??-Infinity)-(a[channel]??-Infinity));
+  const result=new Map<string,number>();
+  if(available.length===1){
+    result.set(moveKey(available[0]!.move),1);
+    return result;
+  }
+  const denominator=Math.max(1,available.length-1);
+  for(let index=0;index<available.length;index++){
+    result.set(moveKey(available[index]!.move),(available.length-1-index)/denominator);
+  }
+  return result;
+}
+
+function rankTitleStageResults(candidates:Move[],completed:CompletedJob[]):RankedStageMove[]{
+  const byMove=new Map<string,CompletedJob[]>();
+  for(const item of completed){
+    const key=moveKey(item.job.move);
+    const list=byMove.get(key)??[];
+    list.push(item);
+    byMove.set(key,list);
+  }
+
+  const stats:TitleChannelStat[]=[];
+  for(const move of candidates){
+    const results=byMove.get(moveKey(move));
+    if(!results?.length)continue;
+    const stable=results.filter(item=>item.job.profileCode===3);
+    const complex=results.filter(item=>item.job.profileCode===4);
+    const stableComplete=stable.filter(item=>item.response.complete);
+    const complexComplete=complex.filter(item=>item.response.complete);
+    const stableChosen=stableComplete.length?stableComplete:stable;
+    const complexChosen=complexComplete.length?complexComplete:complex;
+    const stableScores=stableChosen.map(item=>item.response.score!).filter(Number.isFinite);
+    const complexScores=complexChosen.map(item=>item.response.score!).filter(Number.isFinite);
+    if(!stableScores.length&&!complexScores.length)continue;
+    stats.push({
+      move,
+      stableScore:stableScores.length?median(stableScores):undefined,
+      complexScore:complexScores.length?median(complexScores):undefined,
+      depth:Math.max(...results.map(item=>item.response.depth??item.job.depth)),
+      nodes:results.reduce((sum,item)=>sum+(item.response.nodesVisited??0),0),
+      wasm:results.some(item=>item.response.wasmUsed),
+      stableComplete:stableComplete.length>0,
+      complexComplete:complexComplete.length>0,
+    });
+  }
+
+  const stableRanks=titleRankPercentiles(stats,'stableScore');
+  const complexRanks=titleRankPercentiles(stats,'complexScore');
+  const ranked:RankedStageMove[]=[];
+  for(const item of stats){
+    const key=moveKey(item.move);
+    const stable=stableRanks.get(key);
+    const complex=complexRanks.get(key);
+    const stableMate=(item.stableScore??-Infinity)>9_000_000;
+    const complexMate=(item.complexScore??-Infinity)>9_000_000;
+    let consensus:number;
+    if(stableMate&&complexMate){
+      consensus=10_000_000;
+    }else if(stableMate){
+      consensus=9_000_000+(complex??0)*100_000;
+    }else if(complexMate){
+      consensus=8_500_000+(stable??0)*100_000;
+    }else if(stable!==undefined&&complex!==undefined){
+      const floor=Math.min(stable,complex);
+      const agreement=1-Math.abs(stable-complex);
+      consensus=(stable*0.50+complex*0.30+floor*0.15+agreement*0.05)*1_000_000;
+    }else{
+      const single=stable??complex??0;
+      consensus=single*650_000-250_000;
+    }
+    if(!item.stableComplete)consensus-=18_000;
+    if(!item.complexComplete)consensus-=18_000;
+    ranked.push({move:item.move,score:consensus,depth:item.depth,nodes:item.nodes,wasm:item.wasm});
+  }
+  return ranked.sort((a,b)=>b.score-a.score||b.depth-a.depth||b.nodes-a.nodes);
+}
+
 function rankStageResults(candidates:Move[],completed:CompletedJob[],level:CpuLevel):RankedStageMove[]{
+  if(level==='title')return rankTitleStageResults(candidates,completed);
   const byMove=new Map<string,CompletedJob[]>();
   for(const item of completed){
     const key=moveKey(item.job.move);
@@ -214,7 +306,7 @@ function rankStageResults(candidates:Move[],completed:CompletedJob[],level:CpuLe
     const chosen=complete.length?complete:results;
     const scores=chosen.map(item=>item.response.score!).filter(Number.isFinite);
     if(!scores.length)continue;
-    const incompletePenalty=complete.length?0:level==='title'?24:level==='pro'?12:0;
+    const incompletePenalty=complete.length?0:level==='pro'?12:0;
     ranked.push({
       move,
       score:median(scores)-incompletePenalty,
@@ -263,13 +355,16 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     const growth=level==='title'?1.9:1.7;
     const nodeLimit=Math.min(220_000,Math.trunc(profile.nodeBase*Math.pow(growth,stage)));
     const jobs:RootSearchJob[]=[];
+    const analysisProfiles=level==='title'?[3,4]:[profile.profileCode];
     outer:for(let lane=0;lane<laneCount;lane++){
-      for(const move of survivors){
-        jobs.push({
-          jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
-          move,depth,nodeLimit,lane,level,profileCode:profile.profileCode,
-        });
-        if(jobs.length>=remainingJobs)break outer;
+      for(const analysisProfile of analysisProfiles){
+        for(const move of survivors){
+          jobs.push({
+            jobId:`${stage}-${lane}-${analysisProfile}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
+            move,depth,nodeLimit,lane,level,profileCode:analysisProfile,
+          });
+          if(jobs.length>=remainingJobs)break outer;
+        }
       }
     }
     if(!jobs.length)break;
