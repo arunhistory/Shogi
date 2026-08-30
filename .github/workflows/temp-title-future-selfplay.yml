@@ -30,7 +30,7 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Disable WebGPU only for strength isolation
+      - name: Isolate CPU and enable title evaluation only in runner
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -40,6 +40,15 @@ jobs:
           if old not in s:
               raise SystemExit('GPU_FLAGS_NOT_FOUND')
           p.write_text(s.replace(old,"'--disable-gpu',",1))
+
+          p=Path('src/game/cpu-worker.ts')
+          s=p.read_text()
+          old="profileCode:level==='title'?3:profile.profileCode,"
+          if old not in s:
+              raise SystemExit('TITLE_PROFILE_ANCHOR_NOT_FOUND')
+          p.write_text(s.replace(old,"profileCode:profile.profileCode,",1))
           PY
-      - name: Run title versus pro as gote
+      - name: Build A/B variant
+        run: npm run build
+      - name: Run title profile four versus pro as gote
         run: node scripts/title-selfplay-one.mjs 2
