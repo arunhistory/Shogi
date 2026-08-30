@@ -30,33 +30,9 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Bound title GPU forecast and diagnostic
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src/game/title-gpu-forecast.ts')
-          s=p.read_text()
-          old='const SAMPLES_PER_LANE=3125;'
-          if old not in s:
-              raise SystemExit('TITLE_GPU_SAMPLE_ANCHOR_NOT_FOUND')
-          p.write_text(s.replace(old,'const SAMPLES_PER_LANE=1;',1))
-
-          p=Path('scripts/title-gpu-fabric-throughput.mjs')
-          s=p.read_text()
-          replacements={
-            'result.samplesPerLane===3125':'result.samplesPerLane===1',
-            'result.plannedSamples===100000000':'result.plannedSamples===32000',
-            'result.totalSamples===100000000':'result.totalSamples===32000',
-          }
-          for old,new in replacements.items():
-              if old not in s:
-                  raise SystemExit(f'GPU_DIAGNOSTIC_ANCHOR_NOT_FOUND:{old}')
-              s=s.replace(old,new,1)
-          p.write_text(s)
-          PY
       - name: Build application
         run: npm run build
-      - name: Diagnose title GPU
+      - name: Diagnose title GPU frontier
         run: node scripts/title-gpu-fabric-throughput.mjs
       - name: Run title GPU versus pro CPU as gote
         run: node scripts/title-selfplay-one.mjs 2
