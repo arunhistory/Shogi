@@ -130,7 +130,10 @@ int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qde
     if (stand >= beta) return beta;
     if (stand > alpha) alpha = stand;
   }
-  if (qdepth >= 4) return checked ? stand - 200 : alpha;
+  // Full-width future search is the primary computation. The horizon gets one
+  // tactical verification ply only, preventing leaf tactics from consuming the
+  // budget intended to compare sibling hand-created futures.
+  if (qdepth >= 1) return checked ? stand - 200 : alpha;
 
   MoveList moves;
   generate_legal(pos, moves);
