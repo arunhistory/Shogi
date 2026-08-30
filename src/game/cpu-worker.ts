@@ -311,7 +311,7 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
 
   const safeLegal=legal.filter(move=>safeAgainstImmediatePerpetualLoss(position,move));
   const usable=safeLegal.length?safeLegal:legal;
-  const fastRank=rankCpuMovesFast(position,level==='title'?'pro':level).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
+  const fastRank=rankCpuMovesFast(position,level).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
   let survivors=fastRank.length?fastRank:[...usable];
   const fallbackMove=chooseCpuFallbackMove(position,level);
   let bestMove:Move=fallbackMove&&usable.some(move=>sameCpuMove(move,fallbackMove))
@@ -356,7 +356,7 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
       for(const move of survivors){
         jobs.push({
           jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
-          move,depth,nodeLimit,lane,level,profileCode:level==='title'?3:profile.profileCode,
+          move,depth,nodeLimit,lane,level,profileCode:profile.profileCode,
         });
       }
     }
