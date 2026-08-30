@@ -1,0 +1,55 @@
+name: temp-title-minimax-validation
+on:
+  push:
+    branches: [temp/title-nwp-forecast]
+    paths: ['.github/workflows/temp-title-minimax-validation.yml']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: temp/title-nwp-forecast
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build WebAssembly engine
+        run: sh scripts/build-wasm.sh
+      - name: Verify WebAssembly runtime and rules
+        run: |
+          node scripts/test-wasm.mjs
+          node scripts/test-future-search.mjs
+          node scripts/test-forecast-memory.mjs
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Build application
+        run: npm run build
+      - name: Check CPU latency
+        id: latency
+        continue-on-error: true
+        run: node scripts/cpu-latency-smoke.mjs
+      - name: Check 500-layer 100M GPU future forecast
+        id: gpu
+        continue-on-error: true
+        run: node scripts/title-gpu-fabric-throughput.mjs
+      - name: Run repaired Title vs Pro
+        id: selfplay
+        continue-on-error: true
+        run: node scripts/title-selfplay-one.mjs 1
+      - name: Final validation status
+        if: always()
+        run: |
+          echo "latency=${{ steps.latency.outcome }}"
+          echo "gpu=${{ steps.gpu.outcome }}"
+          echo "selfplay=${{ steps.selfplay.outcome }}"
+          test "${{ steps.latency.outcome }}" = success
+          test "${{ steps.gpu.outcome }}" = success
+          test "${{ steps.selfplay.outcome }}" = success
