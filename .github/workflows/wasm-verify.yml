@@ -8,6 +8,7 @@ on:
       - 'scripts/test-future-search.mjs'
       - 'scripts/test-forecast-memory.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
+      - 'scripts/title-forecast-throughput.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -23,6 +24,7 @@ on:
       - 'scripts/test-future-search.mjs'
       - 'scripts/test-forecast-memory.mjs'
       - 'scripts/cpu-latency-smoke.mjs'
+      - 'scripts/title-forecast-throughput.mjs'
       - 'src/game/wasm.ts'
       - 'src/game/position-key.ts'
       - 'src/game/cpu.ts'
@@ -61,3 +63,5 @@ jobs:
         run: npm run build
       - name: Verify all CPU reply latencies
         run: node scripts/cpu-latency-smoke.mjs
+      - name: Measure actual title forecast throughput
+        run: node scripts/title-forecast-throughput.mjs
