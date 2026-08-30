@@ -120,21 +120,21 @@ int king_safety_score(const Position& pos, int side) {
   }
   const bool home_rank = side == 1 ? ky >= 7 : ky <= 1;
   const int edge_distance = abs_i(kx - 4);
-  const int shield_weight = g_parallel_profile >= 4 ? 10 : g_parallel_profile >= 3 ? 8 : 5;
-  const int danger_weight = g_parallel_profile >= 4 ? 15 : g_parallel_profile >= 3 ? 11 : 7;
+  const int shield_weight = g_parallel_profile >= 4 ? 8 : g_parallel_profile >= 3 ? 7 : 5;
+  const int danger_weight = g_parallel_profile >= 4 ? 13 : g_parallel_profile >= 3 ? 10 : 7;
   return shield * shield_weight + (home_rank ? 18 : 0) + edge_distance * 4 - danger * danger_weight;
 }
 
 int hand_initiative(const Position& pos, int side) {
   const int index = side_index(side);
   int score = 0;
-  score += pos.hands[index][6] * 26;  // rook
-  score += pos.hands[index][5] * 22;  // bishop
-  score += pos.hands[index][4] * 12;  // gold
-  score += pos.hands[index][3] * 10;  // silver
-  score += pos.hands[index][2] * 5;   // knight
-  score += pos.hands[index][1] * 4;   // lance
-  score += pos.hands[index][0] * 2;   // pawn
+  score += pos.hands[index][6] * 26;
+  score += pos.hands[index][5] * 22;
+  score += pos.hands[index][4] * 12;
+  score += pos.hands[index][3] * 10;
+  score += pos.hands[index][2] * 5;
+  score += pos.hands[index][1] * 4;
+  score += pos.hands[index][0] * 2;
   return score;
 }
 
@@ -161,15 +161,121 @@ int strategic_side_score(const Position& pos, int side) {
   } else if (g_parallel_profile == 3) {
     score += activity * 3 + hand_initiative(pos, side) / 2 + promoted_invasion(pos, side);
   } else {
-    score = score * 5 / 4 + activity * 5 + hand_initiative(pos, side) + promoted_invasion(pos, side) * 2;
+    score += activity * 4 + hand_initiative(pos, side) * 3 / 4 + promoted_invasion(pos, side) * 2;
   }
   return score;
+}
+
+int attack_count_on_square(const Position& pos, int attacker_side, int target) {
+  int count = 0;
+  for (int from = 0; from < kBoardSquares; ++from) {
+    if (sign_of(pos.board[from]) == attacker_side && attacks_square(pos, from, target)) ++count;
+  }
+  return count;
+}
+
+int king_net_pressure(const Position& pos, int attacker_side, int defender_side) {
+  const int king = king_square_for_side(pos, defender_side);
+  if (king < 0) return kMateScore / 2;
+  const int ky = row_of(king), kx = col_of(king);
+  int attacked_ring = 0;
+  int attack_contacts = 0;
+  int escape_like = 0;
+  int shield = 0;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dy == 0 && dx == 0) continue;
+      const int y = ky + dy, x = kx + dx;
+      if (!inside(y, x)) continue;
+      const int target = square_of(y, x);
+      const int contacts = attack_count_on_square(pos, attacker_side, target);
+      if (contacts > 0) ++attacked_ring;
+      attack_contacts += contacts > 3 ? 3 : contacts;
+      const int occupant = pos.board[target];
+      if (contacts == 0 && sign_of(occupant) != defender_side) ++escape_like;
+      if (sign_of(occupant) == defender_side) {
+        const int kind = kind_of(occupant);
+        if (kind == 5 || kind == 9 || kind == 10 || kind == 11 || kind == 12) shield += 3;
+        else if (kind == 4) shield += 2;
+        else if (kind != 8) shield += 1;
+      }
+    }
+  }
+  const bool title = g_parallel_profile >= 4;
+  int score = attacked_ring * (title ? 55 : 36)
+    + attack_contacts * (title ? 14 : 9)
+    - escape_like * (title ? 45 : 28)
+    - shield * (title ? 12 : 8);
+  if (is_check(pos, defender_side)) score += title ? 420 : 280;
+  return score;
+}
+
+int attack_commitment_exposure(const Position& pos, int side) {
+  const int king = king_square_for_side(pos, side);
+  if (king < 0) return 100;
+  const int ky = row_of(king), kx = col_of(king);
+  int exposure = 0;
+  for (int square = 0; square < kBoardSquares; ++square) {
+    const int code = pos.board[square];
+    if (sign_of(code) != side) continue;
+    const int kind = kind_of(code);
+    if (kind == 8 || kind == 1) continue;
+    const int y = row_of(square), x = col_of(square);
+    const int progress = side == 1 ? 8 - y : y;
+    const int distance = abs_i(y - ky) + abs_i(x - kx);
+    if (progress < 4 || distance < 3) continue;
+    int weight = 2;
+    if (kind == 7 || kind == 14) weight = 5;
+    else if (kind == 6 || kind == 13) weight = 4;
+    else if (kind == 4 || kind == 5 || kind == 9 || kind == 10 || kind == 11 || kind == 12) weight = 3;
+    exposure += (progress - 3) * weight + (distance > 3 ? distance - 3 : 0);
+  }
+  return exposure;
+}
+
+int mating_pressure_score(const Position& pos, int attacker_side) {
+  if (g_parallel_profile < 3) return 0;
+  const int defender_side = -attacker_side;
+  const int net = king_net_pressure(pos, attacker_side, defender_side);
+  const int induced = attack_commitment_exposure(pos, defender_side) * (g_parallel_profile >= 4 ? 6 : 4);
+  return net + induced;
 }
 
 int parallel_evaluate_for(const Position& pos, int perspective) {
   const int base = evaluate_for(pos, perspective);
   if (g_parallel_profile <= 1) return base;
-  return base + strategic_side_score(pos, perspective) - strategic_side_score(pos, -perspective);
+  const int strategic = strategic_side_score(pos, perspective) - strategic_side_score(pos, -perspective);
+  if (g_parallel_profile == 2) return base + strategic;
+  const int mating = mating_pressure_score(pos, perspective) - mating_pressure_score(pos, -perspective);
+  if (g_parallel_profile == 3) return base + strategic / 2 + mating * 3 / 2;
+  return base + strategic / 3 + mating * 2;
+}
+
+void order_parallel_moves(const Position& pos, MoveList& list, int32_t tt_move, int ply, bool include_quiet_pressure) {
+  order_moves(pos, list, tt_move);
+  if (g_parallel_profile < 3 || list.count <= 1) return;
+  MoveList checks;
+  MoveList pressure;
+  MoveList rest;
+  const bool seek_quiet_net = include_quiet_pressure && g_parallel_profile >= 4 && ply <= 4;
+  const int baseline = seek_quiet_net ? mating_pressure_score(pos, pos.turn) : 0;
+  for (int i = 0; i < list.count; ++i) {
+    const Move move = list.items[i];
+    Position next;
+    apply_move(pos, move, next);
+    if (is_check(next, next.turn)) {
+      checks.add(move);
+    } else if (seek_quiet_net && mating_pressure_score(next, pos.turn) >= baseline + 24) {
+      pressure.add(move);
+    } else {
+      rest.add(move);
+    }
+  }
+  list.count = 0;
+  list.overflow = checks.overflow || pressure.overflow || rest.overflow;
+  for (int i = 0; i < checks.count; ++i) list.add(checks.items[i]);
+  for (int i = 0; i < pressure.count; ++i) list.add(pressure.items[i]);
+  for (int i = 0; i < rest.count; ++i) list.add(rest.items[i]);
 }
 
 int parallel_quiescence(const Position& pos, int alpha, int beta, int ply, int qdepth) {
@@ -191,7 +297,7 @@ int parallel_quiescence(const Position& pos, int alpha, int beta, int ply, int q
   MoveList moves;
   generate_legal(pos, moves);
   if (moves.count == 0) return checked ? -kMateScore + ply : 0;
-  order_moves(pos, moves, -1);
+  order_parallel_moves(pos, moves, -1, ply + qdepth, false);
   const int offset = lane_offset(pos, moves.count, ply + qdepth);
   for (int step = 0; step < moves.count; ++step) {
     const int i = (offset + step) % moves.count;
@@ -247,7 +353,7 @@ int parallel_negamax(const Position& pos, int depth, int alpha, int beta, int pl
   MoveList moves;
   generate_legal(pos, moves);
   if (moves.count == 0) return is_check(pos, pos.turn) ? -kMateScore + ply : 0;
-  order_moves(pos, moves, tt_move);
+  order_parallel_moves(pos, moves, tt_move, ply, true);
   const int offset = lane_offset(pos, moves.count, ply);
   int best = -kInfinity;
   int32_t best_move = -1;

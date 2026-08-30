@@ -19,6 +19,7 @@ for(const name of [
   'shogi_history_buffer','shogi_history_capacity',
   'shogi_legal_move_count','shogi_legal_move_at','shogi_is_check','shogi_is_mate',
   'shogi_repetition_status_with_history','shogi_search_best_move_with_history',
+  'shogi_search_root_move_with_history','shogi_parallel_search_complete',
   'shogi_search_best_move','shogi_nodes_searched',
 ])assert.ok(wasm[name],`missing export: ${name}`);
 assert.ok(wasm.shogi_engine_version()>=3,'unexpected engine version');
@@ -170,7 +171,7 @@ nifuBoard[0*9+4]=-8;
 nifuBoard[8*9+4]=8;
 nifuBoard[6*9+3]=1;
 const hands=new Int32Array(14);
-hands[0]=1; // sente pawn in hand
+hands[0]=1;
 writePosition({board:nifuBoard,hands});
 const nifuMoves=legalCodes().map(decode).filter(move=>move.drop===1);
 assert.ok(nifuMoves.every(move=>move.to%9!==3),'nifu pawn drop was generated');
@@ -230,9 +231,25 @@ assert.equal(wasm.shogi_is_check(WORDS,-1),1,'mated king is not reported in chec
 assert.equal(wasm.shogi_is_mate(WORDS),1,'checkmate position is not reported as mate');
 assert.equal(legalCodes().length,0,'checkmated side still has a legal move');
 
+const mateNetBoard=new Int32Array(81);
+mateNetBoard[0*9+0]=-8;
+mateNetBoard[2*9+0]=5;
+mateNetBoard[2*9+2]=3;
+mateNetBoard[8*9+8]=8;
+const mateNetHands=new Int32Array(14);
+mateNetHands[6]=1;
+const mateNetState={turn:1,board:mateNetBoard,hands:mateNetHands};
+writePosition(mateNetState);
+const mateDrop=encode({to:0*9+1,drop:7});
+assert.ok(legalCodes().includes(mateDrop),'constructed rook mate is not legal');
+const mateHistoryWords=writeHistory(mateNetState,[{mover:0,gaveCheck:false}]);
+const mateScore=wasm.shogi_search_root_move_with_history(WORDS,mateHistoryWords,mateDrop,4,50_000,0,4);
+assert.ok(mateScore>900000,`title forcing search did not recognize immediate mate: ${mateScore}`);
+assert.equal(wasm.shogi_parallel_search_complete(),1,'immediate mate search did not complete');
+
 const invalid=new Int32Array(WORDS);
 input.fill(0,0,WORDS);
 input.set(invalid,0);
 assert.equal(wasm.shogi_legal_move_count(WORDS),-1,'invalid serialized position was accepted');
 
-console.log(JSON.stringify({ok:true,initialLegalMoves:initialLegal.length,nodes:wasm.shogi_nodes_searched()}));
+console.log(JSON.stringify({ok:true,initialLegalMoves:initialLegal.length,nodes:wasm.shogi_nodes_searched(),mateScore}));

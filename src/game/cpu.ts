@@ -35,15 +35,15 @@ export const CPU_BUDGETS:Record<CpuLevel,CpuBudget>={
   title:{maxDepth:6,timeMs:850},
 };
 
-// Pro and title are intentionally different search classes rather than the
-// same evaluation with a larger worker count. Title jumps depth faster and
-// narrows the root field harder so its short reply window is spent deeper.
+// Pro/title are forcing-line search classes. They do not randomize near-equal
+// moves: the search is expected to create variety by following the opponent's
+// actual king exposure, checking resources and mating-net geometry instead.
 export const CPU_PARALLEL_PROFILES:Record<CpuLevel,CpuParallelProfile>={
   beginner:{replyDeadlineMs:240,workerCap:1,logicalJobTarget:1,baseDepth:1,maxDepth:1,depthStep:1,lanes:1,retention:1,minSurvivors:1,nodeBase:600,jobTimeoutMs:120,profileCode:0,openingVariationWindow:999,variationWindow:999,variationPool:6},
   intermediate:{replyDeadlineMs:650,workerCap:2,logicalJobTarget:12,baseDepth:1,maxDepth:3,depthStep:1,lanes:1,retention:0.5,minSurvivors:2,nodeBase:900,jobTimeoutMs:180,profileCode:1,openingVariationWindow:70,variationWindow:45,variationPool:4},
   amateur:{replyDeadlineMs:1000,workerCap:3,logicalJobTarget:36,baseDepth:2,maxDepth:5,depthStep:1,lanes:2,retention:0.5,minSurvivors:4,nodeBase:1500,jobTimeoutMs:240,profileCode:2,openingVariationWindow:48,variationWindow:30,variationPool:3},
-  pro:{replyDeadlineMs:1450,workerCap:6,logicalJobTarget:128,baseDepth:2,maxDepth:8,depthStep:1,lanes:3,retention:0.5,minSurvivors:5,nodeBase:2800,jobTimeoutMs:320,profileCode:3,openingVariationWindow:34,variationWindow:18,variationPool:3},
-  title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:320,baseDepth:3,maxDepth:12,depthStep:2,lanes:5,retention:0.38,minSurvivors:4,nodeBase:4200,jobTimeoutMs:420,profileCode:4,openingVariationWindow:18,variationWindow:6,variationPool:2},
+  pro:{replyDeadlineMs:1450,workerCap:6,logicalJobTarget:128,baseDepth:2,maxDepth:8,depthStep:1,lanes:3,retention:0.5,minSurvivors:5,nodeBase:2800,jobTimeoutMs:320,profileCode:3,openingVariationWindow:0,variationWindow:0,variationPool:1},
+  title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:320,baseDepth:3,maxDepth:12,depthStep:2,lanes:5,retention:0.38,minSurvivors:4,nodeBase:4200,jobTimeoutMs:420,profileCode:4,openingVariationWindow:0,variationWindow:0,variationPool:1},
 };
 
 const values:Record<BoardKind,number>={
@@ -72,7 +72,7 @@ function tsMaterialEvaluation(pos:Position,perspective:Side):number{
 
 function strategicSideScore(pos:Position,side:Side,level:CpuLevel):number{
   if(level==='beginner')return 0;
-  const strength=level==='intermediate'?0.25:level==='amateur'?0.55:level==='pro'?0.9:1.25;
+  const strength=level==='intermediate'?0.25:level==='amateur'?0.55:level==='pro'?0.75:0.9;
   let score=0;
   let king:[number,number]|null=null;
   for(let y=0;y<9;y++)for(let x=0;x<9;x++){
@@ -105,23 +105,144 @@ function strategicSideScore(pos:Position,side:Side,level:CpuLevel):number{
   return Math.round(score*strength);
 }
 
+function rayClear(pos:Position,fromY:number,fromX:number,toY:number,toX:number,stepY:number,stepX:number):boolean{
+  let y=fromY+stepY,x=fromX+stepX;
+  while(y!==toY||x!==toX){
+    if(y<0||y>=9||x<0||x>=9||pos.board[y]?.[x])return false;
+    y+=stepY;x+=stepX;
+  }
+  return true;
+}
+
+function pieceAttacksSquare(pos:Position,fromY:number,fromX:number,toY:number,toX:number):boolean{
+  const piece=pos.board[fromY]?.[fromX];
+  if(!piece||fromY===toY&&fromX===toX)return false;
+  const dy=toY-fromY,dx=toX-fromX;
+  const ay=Math.abs(dy),ax=Math.abs(dx);
+  const forward=piece.side==='sente'?-1:1;
+  const goldLike=piece.kind==='gold'||piece.kind==='tokin'||piece.kind==='promotedSilver'||piece.kind==='promotedKnight'||piece.kind==='promotedLance';
+  if(piece.kind==='king')return ay<=1&&ax<=1;
+  if(goldLike)return(dy===forward&&ax<=1)||(dy===0&&ax===1)||(dy===-forward&&dx===0);
+  if(piece.kind==='silver')return(dy===forward&&ax<=1)||(dy===-forward&&ax===1);
+  if(piece.kind==='knight')return dy===2*forward&&ax===1;
+  if(piece.kind==='pawn')return dy===forward&&dx===0;
+  if(piece.kind==='lance')return dx===0&&dy*forward>0&&rayClear(pos,fromY,fromX,toY,toX,forward,0);
+  if(piece.kind==='rook'||piece.kind==='dragon'){
+    if(dy===0&&dx!==0)return rayClear(pos,fromY,fromX,toY,toX,0,Math.sign(dx));
+    if(dx===0&&dy!==0)return rayClear(pos,fromY,fromX,toY,toX,Math.sign(dy),0);
+    if(piece.kind==='dragon')return ay===1&&ax===1;
+    return false;
+  }
+  if(piece.kind==='bishop'||piece.kind==='horse'){
+    if(ay===ax&&ay>0)return rayClear(pos,fromY,fromX,toY,toX,Math.sign(dy),Math.sign(dx));
+    if(piece.kind==='horse')return ay+ax===1;
+  }
+  return false;
+}
+
+function kingSquare(pos:Position,side:Side):[number,number]|null{
+  for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+    const piece=pos.board[y]![x];
+    if(piece?.side===side&&piece.kind==='king')return[y,x];
+  }
+  return null;
+}
+
+function attackCount(pos:Position,attacker:Side,y:number,x:number):number{
+  let count=0;
+  for(let fy=0;fy<9;fy++)for(let fx=0;fx<9;fx++){
+    const piece=pos.board[fy]![fx];
+    if(piece?.side===attacker&&pieceAttacksSquare(pos,fy,fx,y,x))count++;
+  }
+  return count;
+}
+
+function kingNetPressure(pos:Position,attacker:Side,defender:Side,level:CpuLevel):number{
+  const king=kingSquare(pos,defender);
+  if(!king)return 900000;
+  const [ky,kx]=king;
+  let attackedRing=0,attackContacts=0,escapeLike=0,shield=0;
+  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+    if(!dy&&!dx)continue;
+    const y=ky+dy,x=kx+dx;
+    if(y<0||y>=9||x<0||x>=9)continue;
+    const contacts=attackCount(pos,attacker,y,x);
+    if(contacts>0)attackedRing++;
+    attackContacts+=Math.min(3,contacts);
+    const occupant=pos.board[y]![x];
+    if(contacts===0&&occupant?.side!==defender)escapeLike++;
+    if(occupant?.side===defender){
+      shield+=occupant.kind==='gold'?3:occupant.kind==='silver'?2:occupant.kind==='king'?0:1;
+    }
+  }
+  const title=level==='title';
+  let score=attackedRing*(title?55:36)+attackContacts*(title?14:9)-escapeLike*(title?45:28)-shield*(title?12:8);
+  if(isCheck(pos,defender))score+=title?420:280;
+  return score;
+}
+
+function attackCommitmentExposure(pos:Position,side:Side):number{
+  const king=kingSquare(pos,side);
+  if(!king)return 100;
+  const [ky,kx]=king;
+  let exposure=0;
+  for(let y=0;y<9;y++)for(let x=0;x<9;x++){
+    const piece=pos.board[y]![x];
+    if(!piece||piece.side!==side||piece.kind==='king'||piece.kind==='pawn')continue;
+    const progress=side==='sente'?8-y:y;
+    const distance=Math.abs(y-ky)+Math.abs(x-kx);
+    if(progress<4||distance<3)continue;
+    const weight=piece.kind==='rook'||piece.kind==='dragon'?5:piece.kind==='bishop'||piece.kind==='horse'?4:piece.kind==='gold'||piece.kind==='silver'?3:2;
+    exposure+=(progress-3)*weight+Math.max(0,distance-3);
+  }
+  return exposure;
+}
+
+function matingPressureSide(pos:Position,attacker:Side,level:CpuLevel):number{
+  if(level!=='pro'&&level!=='title')return 0;
+  const defender=other(attacker);
+  const net=kingNetPressure(pos,attacker,defender,level);
+  const induced=attackCommitmentExposure(pos,defender)*(level==='title'?6:4);
+  return net+induced;
+}
+
 function staticEvaluation(pos:Position,perspective:Side,level:CpuLevel,materialEvaluator?:CpuMaterialEvaluator):number{
   let score:number;
   if(materialEvaluator){
     try{score=materialEvaluator(pos,perspective);}catch{score=tsMaterialEvaluation(pos,perspective);}
   }else score=tsMaterialEvaluation(pos,perspective);
-  score+=strategicSideScore(pos,perspective,level)-strategicSideScore(pos,other(perspective),level);
-  if(isCheck(pos,other(perspective)))score+=level==='title'?70:level==='pro'?55:35;
-  if(isCheck(pos,perspective))score-=level==='title'?85:level==='pro'?65:35;
+  const strategic=strategicSideScore(pos,perspective,level)-strategicSideScore(pos,other(perspective),level);
+  if(level==='pro'||level==='title'){
+    const mating=matingPressureSide(pos,perspective,level)-matingPressureSide(pos,other(perspective),level);
+    score+=level==='title'?Math.trunc(strategic/3)+mating*2:Math.trunc(strategic/2)+Math.trunc(mating*3/2);
+  }else score+=strategic;
+  if(isCheck(pos,other(perspective)))score+=level==='title'?420:level==='pro'?280:35;
+  if(isCheck(pos,perspective))score-=level==='title'?520:level==='pro'?340:35;
   return score;
 }
 
-function moveOrderingScore(pos:Position,move:Move):number{
+function forcingRootBonus(next:Position,perspective:Side,level:CpuLevel):number{
+  if(level!=='pro'&&level!=='title')return 0;
+  const defender=next.turn;
+  if(isCheck(next,defender)){
+    const replies=legalMoves(next);
+    if(replies.length===0)return 900000;
+    const scarcity=Math.max(0,12-replies.length);
+    return(level==='title'?1200:800)+scarcity*(level==='title'?70:45);
+  }
+  return Math.trunc(matingPressureSide(next,perspective,level)/4);
+}
+
+function moveOrderingScore(pos:Position,move:Move,level:CpuLevel='amateur'):number{
   let score=0;
   const target=pos.board[move.to[0]]?.[move.to[1]];
   if(target)score+=values[target.kind]*10;
   if(move.promote)score+=500;
   if(move.drop)score+=50;
+  if(level==='pro'||level==='title'){
+    const next=applyLegalMoveUnchecked(pos,move);
+    if(isCheck(next,next.turn))score+=level==='title'?12000:9000;
+  }
   return score;
 }
 
@@ -142,7 +263,9 @@ export function rankCpuMovesFast(pos:Position,level:CpuLevel='amateur',materialE
   return legalMoves(pos)
     .map(move=>{
       const next=applyLegalMoveUnchecked(pos,move);
-      const score=staticEvaluation(next,perspective,level,materialEvaluator)+Math.trunc(moveOrderingScore(pos,move)/20);
+      const score=staticEvaluation(next,perspective,level,materialEvaluator)
+        +Math.trunc(moveOrderingScore(pos,move,level)/20)
+        +forcingRootBonus(next,perspective,level);
       return{move,score};
     })
     .sort((a,b)=>b.score-a.score);
@@ -166,8 +289,9 @@ export function chooseCpuMoveFromRanked(
 ):Move|null{
   if(ranked.length===0)return null;
   const ordered=[...ranked].sort((a,b)=>b.score-a.score||(b.depth??0)-(a.depth??0));
-  const profile=CPU_PARALLEL_PROFILES[level];
   const top=ordered[0]!;
+  if(level==='pro'||level==='title')return top.move;
+  const profile=CPU_PARALLEL_PROFILES[level];
   const window=ply<16?profile.openingVariationWindow:profile.variationWindow;
   const pool=ordered.filter(item=>top.score-item.score<=window).slice(0,Math.max(1,profile.variationPool));
   if(pool.length<=1)return top.move;
@@ -210,13 +334,19 @@ function alphaBeta(
 
   const repeated=repetitionScore(pos,perspective,plyFromRoot);
   if(repeated!==null)return repeated;
-  if(depth===0)return staticEvaluation(pos,perspective,level,materialEvaluator);
+  if(depth===0){
+    if((level==='pro'||level==='title')&&isCheck(pos,pos.turn)){
+      const replies=legalMoves(pos);
+      if(replies.length===0)return pos.turn===perspective?-1000000+plyFromRoot:1000000-plyFromRoot;
+    }
+    return staticEvaluation(pos,perspective,level,materialEvaluator);
+  }
 
   const key=`${positionKey(pos)}|${depth}|${perspective}|${level}`;
   const cached=table.get(key);
   if(cached!==undefined)return cached;
 
-  const moves=legalMoves(pos).sort((a,b)=>moveOrderingScore(pos,b)-moveOrderingScore(pos,a));
+  const moves=legalMoves(pos).sort((a,b)=>moveOrderingScore(pos,b,level)-moveOrderingScore(pos,a,level));
   if(moves.length===0){
     if(isCheck(pos,pos.turn))return pos.turn===perspective?-1000000+plyFromRoot:1000000-plyFromRoot;
     return 0;
@@ -266,7 +396,7 @@ export function scoreCpuRootMove(
   const perspective=pos.turn;
   const next=applyLegalMoveUnchecked(pos,verified);
   const state:SearchState={deadline:Date.now()+Math.max(10,timeMs),nodes:0};
-  let score=staticEvaluation(next,perspective,level,materialEvaluator);
+  let score=staticEvaluation(next,perspective,level,materialEvaluator)+forcingRootBonus(next,perspective,level);
   let completedDepth=0;
   let complete=true;
   for(let depth=1;depth<=Math.max(1,maxDepth);depth++){
@@ -299,7 +429,7 @@ export function chooseCpuMove(pos:Position,level:CpuLevel,materialEvaluator?:Cpu
     const table=new Map<string,number>();
     const current:{move:Move;score:number}[]=[];
     try{
-      const ordered=[...legal].sort((a,b)=>moveOrderingScore(pos,b)-moveOrderingScore(pos,a));
+      const ordered=[...legal].sort((a,b)=>moveOrderingScore(pos,b,level)-moveOrderingScore(pos,a,level));
       let alpha=-Infinity;
       for(const move of ordered){
         if(Date.now()>=state.deadline)throw TIMEOUT;
@@ -320,8 +450,8 @@ export function chooseCpuMove(pos:Position,level:CpuLevel,materialEvaluator?:Cpu
   }
 
   if(ranked.length>1){
-    const varied=chooseCpuMoveFromRanked(level,pos.ply,ranked);
-    if(varied)bestMove=varied;
+    const selected=chooseCpuMoveFromRanked(level,pos.ply,ranked);
+    if(selected)bestMove=selected;
   }else if(level==='beginner'){
     const fallback=chooseCpuFallbackMove(pos,level);
     if(fallback)bestMove=fallback;
