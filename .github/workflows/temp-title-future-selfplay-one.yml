@@ -1,0 +1,29 @@
+name: temp-title-future-selfplay-one
+
+on:
+  push:
+    branches:
+      - 'temp/title-shogi-future-search'
+    paths:
+      - '.github/workflows/temp-title-future-selfplay-one.yml'
+
+jobs:
+  selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build WebAssembly engine
+        run: sh scripts/build-wasm.sh
+      - name: Install application dependencies
+        run: npm ci
+      - name: Run one title vs pro game
+        run: node scripts/title-selfplay-one.mjs 1
