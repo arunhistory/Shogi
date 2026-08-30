@@ -91,22 +91,21 @@ FutureBudget future_child_budget(
   const bool captured = future_capture(pos, move);
   const bool gave_check = is_check(next, next.turn);
 
-  // A capture creates a reusable hand piece. Two extra plies are the minimum
-  // needed to reach the capturing side's next turn and enumerate every legal
-  // board move and every legal drop made possible by the newly acquired hand.
-  // The drop itself is not extended again: doing so lets a single hand branch
-  // monopolize the node budget instead of comparing the other real futures.
-  if (captured && next_hand >= 2) {
-    extension = 2;
-    next_hand -= 2;
-  } else if (captured && next_hand > 0) {
-    extension = 1;
-    --next_hand;
+  // A captured piece becomes a new future move generator, but extending every
+  // capture wastes the search budget. If depth >= 3, ordinary full-width
+  // search already reaches: capture -> opponent reply -> capturer's next turn,
+  // where all legal drops are generated. Only a capture near the horizon needs
+  // extra plies to guarantee that newly created hand is actually usable.
+  if (captured && next_hand > 0 && depth < 3) {
+    extension = 3 - depth;  // depth 1 => +2, depth 2 => +1.
+    const int spend = extension > next_hand ? next_hand : extension;
+    extension = spend;
+    next_hand -= spend;
   }
 
-  // Checks remain horizon-sensitive, but never stack another ply on a capture
-  // that already received the hand-use extension.
-  if (gave_check && next_check > 0) {
+  // A check extension is needed only at the horizon. Deeper checks are already
+  // covered by normal search and extending all of them would overgrow one line.
+  if (gave_check && next_check > 0 && depth <= 1) {
     if (extension == 0) extension = 1;
     --next_check;
   }
@@ -119,10 +118,11 @@ FutureBudget future_child_budget(
 int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qdepth) {
   int terminal = 0;
   if (repetition_score(pos, ply, terminal)) return terminal;
-  if (++g_nodes >= g_node_limit) {
+  if (g_nodes >= g_node_limit) {
     g_parallel_complete = false;
     return parallel_evaluate_for(pos, pos.turn);
   }
+  ++g_nodes;
 
   const bool checked = is_check(pos, pos.turn);
   const int stand = parallel_evaluate_for(pos, pos.turn);
@@ -130,7 +130,7 @@ int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qde
     if (stand >= beta) return beta;
     if (stand > alpha) alpha = stand;
   }
-  if (qdepth >= 6) return checked ? stand - 200 : alpha;
+  if (qdepth >= 4) return checked ? stand - 200 : alpha;
 
   MoveList moves;
   generate_legal(pos, moves);
@@ -142,10 +142,8 @@ int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qde
     Position next;
     apply_move(pos, move, next);
     const bool checking = is_check(next, next.turn);
-    // Hand drops have already been enumerated by the full-width future node.
-    // At the horizon, only genuinely tactical drops (checks) continue, just as
-    // captures and promotions do. This avoids recursively expanding every
-    // quiet drop and starving sibling futures of their node share.
+    // Full-width search has already enumerated ordinary hand drops. At the
+    // horizon continue only tactical captures, promotions and checking drops.
     const bool tactical = checked
       || future_capture(pos, move)
       || move.promote
