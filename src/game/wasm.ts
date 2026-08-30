@@ -39,7 +39,7 @@ interface ShogiWasmExports extends WebAssembly.Exports {
   shogi_repetition_status_with_history:(positionCount:number,historyWordCount:number)=>number;
   shogi_search_best_move_with_history:(positionCount:number,historyWordCount:number,maxDepth:number,nodeLimit:number)=>number;
   shogi_search_root_move_with_history:(positionCount:number,historyWordCount:number,encodedMove:number,maxDepth:number,nodeLimit:number,lane:number,profileCode:number)=>number;
-  shogi_search_future_root_move_with_history?:(positionCount:number,historyWordCount:number,encodedMove:number,maxDepth:number,nodeLimit:number,lane:number)=>number;
+  shogi_search_future_root_move_with_history:(positionCount:number,historyWordCount:number,encodedMove:number,maxDepth:number,nodeLimit:number,lane:number)=>number;
   shogi_parallel_search_complete:()=>number;
   shogi_nodes_searched:()=>number;
 }
@@ -190,6 +190,7 @@ function validExports(exports:WebAssembly.Exports):exports is ShogiWasmExports{
     &&typeof candidate.shogi_repetition_status_with_history==='function'
     &&typeof candidate.shogi_search_best_move_with_history==='function'
     &&typeof candidate.shogi_search_root_move_with_history==='function'
+    &&typeof candidate.shogi_search_future_root_move_with_history==='function'
     &&typeof candidate.shogi_parallel_search_complete==='function'
     &&typeof candidate.shogi_nodes_searched==='function';
 }
@@ -322,9 +323,8 @@ export async function loadWasmShogiEngine(url:string):Promise<WasmShogiEngine|nu
         const positionCount=writePosition(position);
         const historyWords=writeHistory(position);
         const encodedMove=encodeMove(move);
-        const useFutureSearch=profileValue===4&&typeof wasm.shogi_search_future_root_move_with_history==='function';
-        const score=useFutureSearch
-          ?wasm.shogi_search_future_root_move_with_history!(positionCount,historyWords,encodedMove,depth,nodes,laneValue)
+        const score=profileValue===4
+          ?wasm.shogi_search_future_root_move_with_history(positionCount,historyWords,encodedMove,depth,nodes,laneValue)
           :wasm.shogi_search_root_move_with_history(positionCount,historyWords,encodedMove,depth,nodes,laneValue,profileValue);
         if(score===INVALID_PARALLEL_SCORE)throw new Error('WASM_ROOT_SEARCH_INVALID');
         const completeValue=wasm.shogi_parallel_search_complete();
