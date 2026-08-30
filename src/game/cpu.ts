@@ -38,12 +38,14 @@ export const CPU_BUDGETS:Record<CpuLevel,CpuBudget>={
 // Pro/title are forcing-line search classes. They do not randomize near-equal
 // moves: the search is expected to create variety by following the opponent's
 // actual king exposure, checking resources and mating-net geometry instead.
+// Title's 455 logical jobs pair with the 220,000-node per-job ceiling in the
+// parallel worker for a theoretical 100,100,000-position search budget.
 export const CPU_PARALLEL_PROFILES:Record<CpuLevel,CpuParallelProfile>={
   beginner:{replyDeadlineMs:240,workerCap:1,logicalJobTarget:1,baseDepth:1,maxDepth:1,depthStep:1,lanes:1,retention:1,minSurvivors:1,nodeBase:600,jobTimeoutMs:120,profileCode:0,openingVariationWindow:999,variationWindow:999,variationPool:6},
   intermediate:{replyDeadlineMs:650,workerCap:2,logicalJobTarget:12,baseDepth:1,maxDepth:3,depthStep:1,lanes:1,retention:0.5,minSurvivors:2,nodeBase:900,jobTimeoutMs:180,profileCode:1,openingVariationWindow:70,variationWindow:45,variationPool:4},
   amateur:{replyDeadlineMs:1000,workerCap:3,logicalJobTarget:36,baseDepth:2,maxDepth:5,depthStep:1,lanes:2,retention:0.5,minSurvivors:4,nodeBase:1500,jobTimeoutMs:240,profileCode:2,openingVariationWindow:48,variationWindow:30,variationPool:3},
   pro:{replyDeadlineMs:1450,workerCap:6,logicalJobTarget:128,baseDepth:2,maxDepth:8,depthStep:1,lanes:3,retention:0.5,minSurvivors:5,nodeBase:2800,jobTimeoutMs:320,profileCode:3,openingVariationWindow:0,variationWindow:0,variationPool:1},
-  title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:320,baseDepth:3,maxDepth:12,depthStep:2,lanes:5,retention:0.38,minSurvivors:4,nodeBase:4200,jobTimeoutMs:420,profileCode:4,openingVariationWindow:0,variationWindow:0,variationPool:1},
+  title:{replyDeadlineMs:1650,workerCap:12,logicalJobTarget:455,baseDepth:3,maxDepth:12,depthStep:2,lanes:5,retention:0.38,minSurvivors:4,nodeBase:4200,jobTimeoutMs:420,profileCode:4,openingVariationWindow:0,variationWindow:0,variationPool:1},
 };
 
 const values:Record<BoardKind,number>={
