@@ -37,8 +37,11 @@ interface CpuResult {
   logicalJobsCompleted?:number;
   physicalWorkers?:number;
   gpuForecastUsed?:boolean;
+  gpuForecastComplete?:boolean;
   gpuForecastLayers?:number;
   gpuForecastSamples?:number;
+  gpuForecastPlannedSamples?:number;
+  gpuForecastTransitions?:number;
   gpuForecastMs?:number;
 }
 
@@ -266,7 +269,7 @@ function fuseGpuForecast(
   usable:Move[],
   forecast:TitleGpuForecastFabricResult,
 ):RankedStageMove[]{
-  if(!forecast.supported||forecast.rootScores.length!==usable.length)return ranked;
+  if(!forecast.supported||!forecast.complete||forecast.rootScores.length!==usable.length)return ranked;
   const finite=forecast.rootScores.filter(Number.isFinite);
   if(!finite.length)return ranked;
   const minimum=Math.min(...finite);
@@ -364,13 +367,14 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   }
 
   if(finalRanked.length){
-    if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);
+    if(gpuForecast?.supported&&gpuForecast.complete)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);
     const varied=chooseCpuMoveFromRanked(level,position.ply,finalRanked);
     if(varied&&usable.some(move=>sameCpuMove(move,varied)))bestMove=varied;
-  }else if(gpuForecast?.supported&&gpuForecast.bestMoveIndex!==null){
+  }else if(gpuForecast?.supported&&gpuForecast.complete&&gpuForecast.bestMoveIndex!==null){
     bestMove=usable[gpuForecast.bestMoveIndex]??bestMove;
   }
   if(!usable.some(move=>sameCpuMove(move,bestMove)))bestMove=usable[0]!;
+  const gpuComplete=!!gpuForecast?.supported&&gpuForecast.complete;
   return{
     result:{
       move:bestMove,
@@ -379,9 +383,12 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
       logicalJobsPlanned:profile.logicalJobTarget,
       logicalJobsCompleted:jobsCompleted,
       physicalWorkers:slots.length,
-      gpuForecastUsed:!!gpuForecast?.supported,
+      gpuForecastUsed:gpuComplete,
+      gpuForecastComplete:gpuComplete,
       gpuForecastLayers:gpuForecast?.supported?gpuForecast.layers:0,
       gpuForecastSamples:gpuForecast?.supported?gpuForecast.totalSamples:0,
+      gpuForecastPlannedSamples:gpuForecast?.supported?gpuForecast.plannedSamples:0,
+      gpuForecastTransitions:gpuForecast?.supported?gpuForecast.stateTransitions:0,
       gpuForecastMs:gpuForecast?.supported?gpuForecast.elapsedMs:0,
     },
     wasmUsed,
@@ -405,7 +412,7 @@ self.onmessage=async(event:MessageEvent<CpuWorkerRequest>)=>{
   }catch(error){
     const fallback=chooseCpuFallbackMove(position,level);
     const response:CpuResponse=fallback
-      ?{requestId,positionKey:key,ok:true,wasmUsed:false,result:{move:fallback,completedDepth:0,nodesVisited:0,logicalJobsCompleted:0,physicalWorkers:workerPool.length,gpuForecastUsed:false,gpuForecastLayers:0,gpuForecastSamples:0,gpuForecastMs:0}}
+      ?{requestId,positionKey:key,ok:true,wasmUsed:false,result:{move:fallback,completedDepth:0,nodesVisited:0,logicalJobsCompleted:0,physicalWorkers:workerPool.length,gpuForecastUsed:false,gpuForecastComplete:false,gpuForecastLayers:0,gpuForecastSamples:0,gpuForecastPlannedSamples:0,gpuForecastTransitions:0,gpuForecastMs:0}}
       :{requestId,positionKey:key,ok:false,wasmUsed:false,error:error instanceof Error?error.message:'CPU_SEARCH_FAILED'};
     self.postMessage(response);
   }
