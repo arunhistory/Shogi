@@ -1,0 +1,103 @@
+name: temp-title-beat-pro
+
+on:
+  push:
+    branches:
+      - 'temp/title-beat-pro'
+    paths:
+      - '.github/workflows/temp-title-beat-pro.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: temp/title-beat-pro
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build WebAssembly engine
+        run: sh scripts/build-wasm.sh
+      - name: Install application dependencies
+        run: npm ci
+      - name: Apply title tempo-discipline A/B patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/game/cpu-worker.ts')
+          s=p.read_text()
+          old="import { applyMove, gameOutcome, legalMoves, positionKey } from './engine';"
+          new="import { applyMove, gameOutcome, isCheck, legalMoves, positionKey } from './engine';"
+          if old not in s: raise SystemExit('IMPORT_ANCHOR_NOT_FOUND')
+          s=s.replace(old,new,1)
+
+          anchor="const moveKey=(move:Move)=>`${move.from?.[0]??-1},${move.from?.[1]??-1}>${move.to[0]},${move.to[1]}|${move.drop??''}|${move.promote?1:0}`;\n"
+          addition=r'''const moveKey=(move:Move)=>`${move.from?.[0]??-1},${move.from?.[1]??-1}>${move.to[0]},${move.to[1]}|${move.drop??''}|${move.promote?1:0}`;
+
+let lastTitleMove:Move|null=null;
+let lastTitleMovePly=-999;
+
+function isImmediateOwnUndo(position:Position,move:Move):boolean{
+  if(!lastTitleMove?.from||!move.from)return false;
+  if(position.ply!==lastTitleMovePly+2)return false;
+  if(lastTitleMove.promote||move.promote||lastTitleMove.drop||move.drop)return false;
+  if(move.from[0]!==lastTitleMove.to[0]||move.from[1]!==lastTitleMove.to[1])return false;
+  if(move.to[0]!==lastTitleMove.from[0]||move.to[1]!==lastTitleMove.from[1])return false;
+  if(position.board[move.to[0]]?.[move.to[1]])return false;
+  if(isCheck(position,position.turn))return false;
+  try{
+    const next=applyMove(position,move);
+    const outcome=gameOutcome(next);
+    if(outcome.ended&&'winner' in outcome&&outcome.winner===position.turn)return false;
+    if(isCheck(next,next.turn))return false;
+  }catch{return false;}
+  return true;
+}
+
+function applyTitleTempoDiscipline(position:Position,ranked:RankedStageMove[]):RankedStageMove[]{
+  if(!lastTitleMove||position.ply!==lastTitleMovePly+2)return ranked;
+  return ranked.map(item=>{
+    if(!isImmediateOwnUndo(position,item.move))return item;
+    const penalty=650;
+    return{...item,score:item.score-penalty,low:item.low-penalty,high:item.high-penalty};
+  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);
+}
+'''
+          if anchor not in s: raise SystemExit('MOVE_KEY_ANCHOR_NOT_FOUND')
+          s=s.replace(anchor,addition,1)
+
+          old="""      const chosen=validRanked.length?validRanked:ranked;\n      finalRanked=chosen;\n      bestMove=chosen[0]!.move;\n      completedDepth=Math.max(completedDepth,chosen[0]!.depth);\n      if(level==='title'){\n        survivors=titleForecastCohort(chosen,stage,profile.minSurvivors);\n"""
+          new="""      const chosen=validRanked.length?validRanked:ranked;\n      const disciplined=level==='title'?applyTitleTempoDiscipline(position,chosen):chosen;\n      finalRanked=disciplined;\n      bestMove=disciplined[0]!.move;\n      completedDepth=Math.max(completedDepth,disciplined[0]!.depth);\n      if(level==='title'){\n        survivors=titleForecastCohort(disciplined,stage,profile.minSurvivors);\n"""
+          if old not in s: raise SystemExit('RANK_ANCHOR_NOT_FOUND')
+          s=s.replace(old,new,1)
+
+          old="""    const response:CpuResponse={requestId,positionKey:key,ok:true,wasmUsed:searched.wasmUsed,result:searched.result};\n    self.postMessage(response);\n"""
+          new="""    if(level==='title'&&searched.result.move){\n      lastTitleMove=searched.result.move;\n      lastTitleMovePly=position.ply;\n    }\n    const response:CpuResponse={requestId,positionKey:key,ok:true,wasmUsed:searched.wasmUsed,result:searched.result};\n    self.postMessage(response);\n"""
+          if old not in s: raise SystemExit('RESULT_ANCHOR_NOT_FOUND')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Disable WebGPU for CPU strength isolation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/title-selfplay-one.mjs')
+          s=p.read_text()
+          old="'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',"
+          if old not in s: raise SystemExit('GPU_FLAGS_NOT_FOUND')
+          p.write_text(s.replace(old,"'--disable-gpu',",1))
+          PY
+      - name: Build A/B variant
+        run: npm run build
+      - name: Run title versus pro as gote
+        run: node scripts/title-selfplay-one.mjs 2
