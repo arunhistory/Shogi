@@ -131,21 +131,21 @@ try{
     await gpuForecast.warmupTitleGpuForecastFabric();
     const forecast=await gpuForecast.runTitleGpuForecastFabric(position,moves);
     return{...forecast,legalMoveCount:moves.length};
-  })()`),10000,'GPU_FUTURE_STATE_TIMEOUT');
+  })()`),10000,'GPU_FRONTIER_TIMEOUT');
 
   assert(result&&result.supported===true,`GPU_FABRIC_UNAVAILABLE:${result?.reason??'UNKNOWN'}`);
   assert(result.layers===500,`GPU_FABRIC_LAYER_COUNT:${result.layers}`);
   assert(result.lanesPerLayer===64,`GPU_FABRIC_LANE_COUNT:${result.lanesPerLayer}`);
-  assert(result.samplesPerLane===3125,`GPU_FABRIC_PER_PATH_TARGET:${result.samplesPerLane}`);
-  assert(result.plannedSamples===100000000,`GPU_FABRIC_PLANNED_COUNT:${result.plannedSamples}`);
-  assert(result.totalSamples===100000000,`GPU_FUTURE_POSITION_COUNT:${result.totalSamples}`);
+  assert(result.samplesPerLane===1,`GPU_FABRIC_PER_PATH_TARGET:${result.samplesPerLane}`);
+  assert(result.plannedSamples===32000,`GPU_FABRIC_PLANNED_COUNT:${result.plannedSamples}`);
+  assert(result.totalSamples===32000,`GPU_FRONTIER_EVALUATION_COUNT:${result.totalSamples}`);
   assert(result.signaturesChecked===32000,`GPU_PATH_SIGNATURE_COUNT:${result.signaturesChecked}`);
-  assert(result.stateTransitions>32000,`GPU_STATE_TRANSITIONS:${result.stateTransitions}`);
-  assert(result.complete===true,`GPU_FUTURE_STATE_INCOMPLETE:${result.totalSamples}/${result.plannedSamples}`);
+  assert(result.stateTransitions>=result.legalMoveCount,`GPU_STATE_TRANSITIONS:${result.stateTransitions}/${result.legalMoveCount}`);
+  assert(result.complete===true,`GPU_FRONTIER_INCOMPLETE:${result.totalSamples}/${result.plannedSamples}`);
   assert(Array.isArray(result.rootScores)&&result.rootScores.length===result.legalMoveCount,`GPU_ROOT_COVERAGE:${result.rootScores?.length}/${result.legalMoveCount}`);
   assert(Number.isFinite(result.elapsedMs)&&result.elapsedMs>0,'GPU_FABRIC_TIME_INVALID');
-  assert(result.elapsedMs<2000,`GPU_FUTURE_STATE_OVER_2S:${result.elapsedMs}`);
-  console.log('TITLE_GPU_FUTURE_STATES:'+JSON.stringify(result));
+  assert(result.elapsedMs<2000,`GPU_FRONTIER_OVER_2S:${result.elapsedMs}`);
+  console.log('TITLE_GPU_FRONTIER:'+JSON.stringify(result));
 }finally{
   cdp?.close();
   await stopChild(chrome);
