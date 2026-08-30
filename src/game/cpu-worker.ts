@@ -1,5 +1,12 @@
 /// <reference lib="webworker" />
-import { CPU_PARALLEL_PROFILES, chooseCpuFallbackMove, chooseCpuMove, rankCpuMovesFast, sameCpuMove } from './cpu';
+import {
+  CPU_PARALLEL_PROFILES,
+  chooseCpuFallbackMove,
+  chooseCpuMove,
+  chooseCpuMoveFromRanked,
+  rankCpuMovesFast,
+  sameCpuMove,
+} from './cpu';
 import { applyMove, gameOutcome, legalMoves, positionKey } from './engine';
 import type { CpuLevel, Move, Position } from './types';
 
@@ -44,6 +51,8 @@ interface RootSearchJob {
   depth:number;
   nodeLimit:number;
   lane:number;
+  level:CpuLevel;
+  profileCode:number;
 }
 
 interface RootJobResponse {
@@ -61,6 +70,14 @@ interface RootJobResponse {
 interface CompletedJob {
   job:RootSearchJob;
   response:RootJobResponse;
+}
+
+interface RankedStageMove {
+  move:Move;
+  score:number;
+  depth:number;
+  nodes:number;
+  wasm:boolean;
 }
 
 const moveKey=(move:Move)=>`${move.from?.[0]??-1},${move.from?.[1]??-1}>${move.to[0]},${move.to[1]}|${move.drop??''}|${move.promote?1:0}`;
@@ -164,6 +181,7 @@ async function runStage(
   slots:RootWorkerSlot[],
   jobs:RootSearchJob[],
   deadline:number,
+  jobTimeoutMs:number,
 ):Promise<CompletedJob[]>{
   let cursor=0;
   const completed:CompletedJob[]=[];
@@ -172,7 +190,7 @@ async function runStage(
       const remaining=deadline-Date.now();
       if(remaining<=45)break;
       const job=jobs[cursor++]!;
-      const timeout=Math.min(320,Math.max(45,remaining-25));
+      const timeout=Math.min(jobTimeoutMs,Math.max(45,remaining-25));
       const response=await slot.run(job,timeout);
       if(response?.ok&&typeof response.score==='number'&&Number.isFinite(response.score))completed.push({job,response});
     }
@@ -180,7 +198,7 @@ async function runStage(
   return completed;
 }
 
-function rankStageResults(candidates:Move[],completed:CompletedJob[]):{move:Move;score:number;depth:number;nodes:number;wasm:boolean}[]{
+function rankStageResults(candidates:Move[],completed:CompletedJob[],level:CpuLevel):RankedStageMove[]{
   const byMove=new Map<string,CompletedJob[]>();
   for(const item of completed){
     const key=moveKey(item.job.move);
@@ -188,7 +206,7 @@ function rankStageResults(candidates:Move[],completed:CompletedJob[]):{move:Move
     list.push(item);
     byMove.set(key,list);
   }
-  const ranked:{move:Move;score:number;depth:number;nodes:number;wasm:boolean}[]=[];
+  const ranked:RankedStageMove[]=[];
   for(const move of candidates){
     const results=byMove.get(moveKey(move));
     if(!results?.length)continue;
@@ -196,9 +214,10 @@ function rankStageResults(candidates:Move[],completed:CompletedJob[]):{move:Move
     const chosen=complete.length?complete:results;
     const scores=chosen.map(item=>item.response.score!).filter(Number.isFinite);
     if(!scores.length)continue;
+    const incompletePenalty=complete.length?0:level==='title'?24:level==='pro'?12:0;
     ranked.push({
       move,
-      score:median(scores),
+      score:median(scores)-incompletePenalty,
       depth:Math.max(...chosen.map(item=>item.response.depth??item.job.depth)),
       nodes:chosen.reduce((sum,item)=>sum+(item.response.nodesVisited??0),0),
       wasm:chosen.some(item=>item.response.wasmUsed),
@@ -214,7 +233,7 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
 
   const safeLegal=legal.filter(move=>safeAgainstImmediatePerpetualLoss(position,move));
   const usable=safeLegal.length?safeLegal:legal;
-  const fastRank=rankCpuMovesFast(position).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
+  const fastRank=rankCpuMovesFast(position,level).map(item=>item.move).filter(move=>usable.some(candidate=>sameCpuMove(candidate,move)));
   let survivors=fastRank.length?fastRank:[...usable];
   const fallbackMove=chooseCpuFallbackMove(position,level);
   let bestMove:Move=fallbackMove&&usable.some(move=>sameCpuMove(move,fallbackMove))
@@ -235,35 +254,40 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   let completedDepth=0;
   let wasmUsed=false;
   let stage=0;
+  let finalRanked:RankedStageMove[]=[];
 
   while(Date.now()<deadline-80&&jobsIssued<profile.logicalJobTarget&&survivors.length){
-    const depth=Math.min(profile.maxDepth,profile.baseDepth+stage);
+    const depth=Math.min(profile.maxDepth,profile.baseDepth+stage*profile.depthStep);
     const laneCount=Math.min(profile.lanes,1+stage);
     const remainingJobs=profile.logicalJobTarget-jobsIssued;
-    const nodeLimit=Math.min(120_000,Math.trunc(profile.nodeBase*Math.pow(1.7,stage)));
+    const growth=level==='title'?1.9:1.7;
+    const nodeLimit=Math.min(220_000,Math.trunc(profile.nodeBase*Math.pow(growth,stage)));
     const jobs:RootSearchJob[]=[];
     outer:for(let lane=0;lane<laneCount;lane++){
       for(const move of survivors){
-        jobs.push({jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,move,depth,nodeLimit,lane});
+        jobs.push({
+          jobId:`${stage}-${lane}-${jobsIssued+jobs.length}-${crypto.randomUUID()}`,
+          move,depth,nodeLimit,lane,level,profileCode:profile.profileCode,
+        });
         if(jobs.length>=remainingJobs)break outer;
       }
     }
     if(!jobs.length)break;
     jobsIssued+=jobs.length;
-    const completed=await runStage(slots,jobs,deadline);
+    const completed=await runStage(slots,jobs,deadline,profile.jobTimeoutMs);
     jobsCompleted+=completed.length;
     nodesVisited+=completed.reduce((sum,item)=>sum+(item.response.nodesVisited??0),0);
     wasmUsed ||= completed.some(item=>item.response.wasmUsed);
-    const ranked=rankStageResults(survivors,completed);
+    const ranked=rankStageResults(survivors,completed,level);
     if(ranked.length){
       const validRanked=ranked.filter(item=>safeAgainstImmediatePerpetualLoss(position,item.move));
       const chosen=validRanked.length?validRanked:ranked;
+      finalRanked=chosen;
       bestMove=chosen[0]!.move;
       completedDepth=Math.max(completedDepth,chosen[0]!.depth);
-      const keep=Math.min(
-        chosen.length,
-        Math.max(1,Math.min(profile.minSurvivors,chosen.length),Math.ceil(chosen.length*profile.retention)),
-      );
+      const retentionTarget=Math.ceil(chosen.length*profile.retention);
+      const survivorFloor=Math.min(profile.minSurvivors,chosen.length);
+      const keep=Math.max(1,Math.min(chosen.length,Math.max(survivorFloor,retentionTarget)));
       survivors=chosen.slice(0,keep).map(item=>item.move);
     }else if(Date.now()>=deadline-120){
       break;
@@ -272,6 +296,10 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     stage++;
   }
 
+  if(finalRanked.length){
+    const varied=chooseCpuMoveFromRanked(level,position.ply,finalRanked);
+    if(varied&&usable.some(move=>sameCpuMove(move,varied)))bestMove=varied;
+  }
   if(!usable.some(move=>sameCpuMove(move,bestMove)))bestMove=usable[0]!;
   return{
     result:{

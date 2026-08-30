@@ -21,7 +21,7 @@ export interface WasmShogiEngine {
   isMate:(position:Position)=>boolean;
   repetitionStatus:(position:Position)=>RepetitionStatus;
   searchBestMove:(position:Position,maxDepth:number,nodeLimit:number)=>WasmSearchResult;
-  searchRootMove:(position:Position,move:Move,maxDepth:number,nodeLimit:number,lane:number)=>WasmRootSearchResult;
+  searchRootMove:(position:Position,move:Move,maxDepth:number,nodeLimit:number,lane:number,profileCode:number)=>WasmRootSearchResult;
 }
 
 interface ShogiWasmExports extends WebAssembly.Exports {
@@ -38,7 +38,7 @@ interface ShogiWasmExports extends WebAssembly.Exports {
   shogi_is_mate:(count:number)=>number;
   shogi_repetition_status_with_history:(positionCount:number,historyWordCount:number)=>number;
   shogi_search_best_move_with_history:(positionCount:number,historyWordCount:number,maxDepth:number,nodeLimit:number)=>number;
-  shogi_search_root_move_with_history:(positionCount:number,historyWordCount:number,encodedMove:number,maxDepth:number,nodeLimit:number,lane:number)=>number;
+  shogi_search_root_move_with_history:(positionCount:number,historyWordCount:number,encodedMove:number,maxDepth:number,nodeLimit:number,lane:number,profileCode:number)=>number;
   shogi_parallel_search_complete:()=>number;
   shogi_nodes_searched:()=>number;
 }
@@ -313,13 +313,14 @@ export async function loadWasmShogiEngine(url:string):Promise<WasmShogiEngine|nu
         const nodesVisited=wasm.shogi_nodes_searched();
         return{move,nodesVisited:Number.isSafeInteger(nodesVisited)&&nodesVisited>=0?nodesVisited:0};
       },
-      searchRootMove(position,move,maxDepth,nodeLimit,lane){
+      searchRootMove(position,move,maxDepth,nodeLimit,lane,profileCode){
         const depth=Math.max(1,Math.min(12,Math.trunc(maxDepth)));
         const nodes=Math.max(100,Math.min(250_000,Math.trunc(nodeLimit)));
         const laneValue=Math.max(0,Math.min(255,Math.trunc(lane)));
+        const profileValue=Math.max(0,Math.min(4,Math.trunc(profileCode)));
         const positionCount=writePosition(position);
         const historyWords=writeHistory(position);
-        const score=wasm.shogi_search_root_move_with_history(positionCount,historyWords,encodeMove(move),depth,nodes,laneValue);
+        const score=wasm.shogi_search_root_move_with_history(positionCount,historyWords,encodeMove(move),depth,nodes,laneValue,profileValue);
         if(score===INVALID_PARALLEL_SCORE)throw new Error('WASM_ROOT_SEARCH_INVALID');
         const completeValue=wasm.shogi_parallel_search_complete();
         if(completeValue!==0&&completeValue!==1)throw new Error('WASM_ROOT_SEARCH_COMPLETION_INVALID');

@@ -82,12 +82,20 @@ try{
   await openGameSettings(cdp,'local');
   await evaluate(cdp,`(()=>{document.querySelector('#order').value='sente';document.querySelector('#go').click();})()`);
   await waitFor(cdp,`document.querySelector('.game.local-mode')&&document.querySelector('#resign')?.parentElement?.id==='senteHand'`,'local sente controls');
+  await waitFor(cdp,`document.querySelector('#moveHistory')&&document.querySelector('#opponentAction')`,'history controls');
   assert(await evaluate(cdp,`getComputedStyle(document.querySelector('#goteHand')).transform!=='none'`),'gote hand labels are not opponent-facing');
   assert(await evaluate(cdp,`getComputedStyle(document.querySelector('.elapsed-label')).position==='absolute'`),'local elapsed time was not moved to side');
   await evaluate(cdp,`document.querySelectorAll('.board .cell')[54].click()`);
   await waitFor(cdp,`document.querySelectorAll('.board .cell')[45].classList.contains('legal')`,'local pawn target');
   await evaluate(cdp,`document.querySelectorAll('.board .cell')[45].click()`);
   await waitFor(cdp,`document.querySelector('#resign')?.parentElement?.id==='goteHand'`,'local gote controls');
+  await evaluate(cdp,`document.querySelector('#opponentAction').click()`);
+  await waitFor(cdp,`document.querySelector('[data-opponent-action-overlay]')?.textContent.includes('9七')&&document.querySelector('[data-opponent-action-overlay]')?.textContent.includes('9六')`,'opponent action route');
+  assert(await evaluate(cdp,`document.querySelector('[data-opponent-action-overlay]').textContent.includes('歩')`),'opponent action piece missing');
+  await evaluate(cdp,`document.querySelector('.opponent-action-close').click()`);
+  await evaluate(cdp,`document.querySelector('#moveHistory').click()`);
+  await waitFor(cdp,`document.querySelector('.move-history-entry')?.textContent.includes('9七')&&document.querySelector('.move-history-entry')?.textContent.includes('9六')`,'move history row');
+  await evaluate(cdp,`document.querySelector('.move-history-close').click()`);
 
   await fresh(cdp,'promotion');
   await evaluate(cdp,`(()=>{const cells=Array.from({length:81},(_,i)=>'<button class="cell'+(i===63?' selected':'')+(i===23?' legal':'')+'">'+(i===63?'角':'')+'</button>').join('');document.querySelector('#app').innerHTML='<main class="game"><div class="cpu-level">CPU: 初心者 / あなた: 先手</div><div class="board">'+cells+'</div></main>';document.querySelectorAll('.board .cell')[23].click();})()`);
@@ -110,7 +118,7 @@ try{
   await evaluate(cdp,`document.querySelector('#app').innerHTML='<main class="game"><header><div class="match-header"><strong>後手番・王手</strong></div></header>'+${checkingBoard}+'<div class="note local-order">プレイヤー1: 先手</div></main>'`);
   await waitFor(cdp,`document.querySelector('.check-effect strong')?.textContent==='王手'`,'check effect');
 
-  console.log(JSON.stringify({ok:true,bgmGesture:true,cpuGote:true,localLayout:true,promotion:true,onlineCancel:true,checkEffect:true}));
+  console.log(JSON.stringify({ok:true,bgmGesture:true,cpuGote:true,localLayout:true,moveHistory:true,opponentAction:true,promotion:true,onlineCancel:true,checkEffect:true}));
 }finally{
   cdp?.close();
   await stopChild(chrome);

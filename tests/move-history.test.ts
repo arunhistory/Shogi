@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest';
-import {inferMove,squareLabel} from '../src/ui/move-history-core';
-import type {BoardSnapshot,HistoryPiece} from '../src/ui/move-history-core';
+import {inferMove,latestOpponentMove,squareLabel} from '../src/ui/move-history-core';
+import type {BoardSnapshot,HistoryPiece,InferredMove} from '../src/ui/move-history-core';
 
 const empty=():BoardSnapshot=>Array.from({length:81},()=>null);
 const piece=(label:string,side:HistoryPiece['side']):HistoryPiece=>({label,side});
@@ -34,6 +34,17 @@ describe('move history inference',()=>{
     const after=empty();
     after[40]=piece('銀','gote');
     expect(inferMove(before,after)).toEqual({side:'gote',piece:'銀',from:null,to:'5五',captured:null,promotedTo:null,drop:true});
+  });
+
+  it('finds the latest move made by the opponent of the viewer',()=>{
+    const history:InferredMove[]=[
+      {side:'gote',piece:'歩',from:'3三',to:'3四',captured:null,promotedTo:null,drop:false},
+      {side:'sente',piece:'銀',from:'7九',to:'6八',captured:null,promotedTo:null,drop:false},
+      {side:'gote',piece:'角',from:'2二',to:'8八',captured:'角',promotedTo:null,drop:false},
+    ];
+    expect(latestOpponentMove(history,'sente')?.piece).toBe('角');
+    expect(latestOpponentMove(history,'gote')?.piece).toBe('銀');
+    expect(latestOpponentMove(history,null)?.piece).toBe('角');
   });
 
   it('does not treat a board reset as one move',()=>{

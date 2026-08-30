@@ -34,6 +34,16 @@ export function snapshotsEqual(before:BoardSnapshot,after:BoardSnapshot):boolean
   return before.length===81&&after.length===81&&before.every((piece,index)=>samePiece(piece,after[index]??null));
 }
 
+export function latestOpponentMove<T extends InferredMove>(history:readonly T[],viewer:HistorySide|null):T|null{
+  if(history.length===0)return null;
+  if(viewer===null)return history[history.length-1]??null;
+  for(let index=history.length-1;index>=0;index--){
+    const entry=history[index]!;
+    if(entry.side!==viewer)return entry;
+  }
+  return null;
+}
+
 export function inferMove(before:BoardSnapshot,after:BoardSnapshot):InferredMove|null{
   if(before.length!==81||after.length!==81)return null;
   const changed:number[]=[];

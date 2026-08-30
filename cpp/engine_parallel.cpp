@@ -4,6 +4,7 @@ namespace {
 constexpr int32_t kParallelInvalidScore = 2147483647;
 bool g_parallel_complete = true;
 uint32_t g_parallel_lane = 0;
+int g_parallel_profile = 0;
 
 bool same_move_value(const Move& a, const Move& b) {
   return a.from == b.from && a.to == b.to && a.drop == b.drop && a.promote == b.promote;
@@ -44,20 +45,148 @@ int lane_offset(const Position& pos, int count, int ply) {
   return static_cast<int>(value % static_cast<uint64_t>(count));
 }
 
+int king_square_for_side(const Position& pos, int side) {
+  for (int square = 0; square < kBoardSquares; ++square) {
+    if (pos.board[square] == side * 8) return square;
+  }
+  return -1;
+}
+
+int ray_activity(const Position& pos, int from, int side, int dy, int dx) {
+  int score = 0;
+  int y = row_of(from) + dy;
+  int x = col_of(from) + dx;
+  while (inside(y, x)) {
+    const int target = pos.board[square_of(y, x)];
+    if (target == 0) {
+      ++score;
+    } else {
+      if (sign_of(target) == -side) ++score;
+      break;
+    }
+    y += dy;
+    x += dx;
+  }
+  return score;
+}
+
+int major_activity(const Position& pos, int side) {
+  int score = 0;
+  for (int square = 0; square < kBoardSquares; ++square) {
+    const int code = pos.board[square];
+    if (sign_of(code) != side) continue;
+    const int kind = kind_of(code);
+    if (kind == 7 || kind == 14) {
+      score += ray_activity(pos, square, side, -1, 0);
+      score += ray_activity(pos, square, side, 1, 0);
+      score += ray_activity(pos, square, side, 0, -1);
+      score += ray_activity(pos, square, side, 0, 1);
+      if (kind == 14) score += 2;
+    }
+    if (kind == 6 || kind == 13) {
+      score += ray_activity(pos, square, side, -1, -1);
+      score += ray_activity(pos, square, side, -1, 1);
+      score += ray_activity(pos, square, side, 1, -1);
+      score += ray_activity(pos, square, side, 1, 1);
+      if (kind == 13) score += 2;
+    }
+  }
+  return score;
+}
+
+int king_safety_score(const Position& pos, int side) {
+  const int king = king_square_for_side(pos, side);
+  if (king < 0) return -kMateScore / 2;
+  const int ky = row_of(king), kx = col_of(king);
+  int shield = 0;
+  int danger = 0;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dy == 0 && dx == 0) continue;
+      const int y = ky + dy, x = kx + dx;
+      if (!inside(y, x)) continue;
+      const int square = square_of(y, x);
+      const int occupant = pos.board[square];
+      if (sign_of(occupant) == side) {
+        const int kind = kind_of(occupant);
+        if (kind == 5 || kind == 9 || kind == 10 || kind == 11 || kind == 12) shield += 3;
+        else if (kind == 4) shield += 2;
+        else if (kind != 8) shield += 1;
+      }
+      for (int attacker = 0; attacker < kBoardSquares; ++attacker) {
+        if (sign_of(pos.board[attacker]) == -side && attacks_square(pos, attacker, square)) ++danger;
+      }
+    }
+  }
+  const bool home_rank = side == 1 ? ky >= 7 : ky <= 1;
+  const int edge_distance = abs_i(kx - 4);
+  const int shield_weight = g_parallel_profile >= 4 ? 10 : g_parallel_profile >= 3 ? 8 : 5;
+  const int danger_weight = g_parallel_profile >= 4 ? 15 : g_parallel_profile >= 3 ? 11 : 7;
+  return shield * shield_weight + (home_rank ? 18 : 0) + edge_distance * 4 - danger * danger_weight;
+}
+
+int hand_initiative(const Position& pos, int side) {
+  const int index = side_index(side);
+  int score = 0;
+  score += pos.hands[index][6] * 26;  // rook
+  score += pos.hands[index][5] * 22;  // bishop
+  score += pos.hands[index][4] * 12;  // gold
+  score += pos.hands[index][3] * 10;  // silver
+  score += pos.hands[index][2] * 5;   // knight
+  score += pos.hands[index][1] * 4;   // lance
+  score += pos.hands[index][0] * 2;   // pawn
+  return score;
+}
+
+int promoted_invasion(const Position& pos, int side) {
+  int score = 0;
+  for (int square = 0; square < kBoardSquares; ++square) {
+    const int code = pos.board[square];
+    if (sign_of(code) != side) continue;
+    const int kind = kind_of(code);
+    if (kind < 9) continue;
+    const int y = row_of(square);
+    const int progress = side == 1 ? 8 - y : y;
+    if (progress >= 5) score += (progress - 4) * 5;
+  }
+  return score;
+}
+
+int strategic_side_score(const Position& pos, int side) {
+  if (g_parallel_profile <= 1) return 0;
+  int score = king_safety_score(pos, side);
+  const int activity = major_activity(pos, side);
+  if (g_parallel_profile == 2) {
+    score = score / 2 + activity * 2;
+  } else if (g_parallel_profile == 3) {
+    score += activity * 3 + hand_initiative(pos, side) / 2 + promoted_invasion(pos, side);
+  } else {
+    score = score * 5 / 4 + activity * 5 + hand_initiative(pos, side) + promoted_invasion(pos, side) * 2;
+  }
+  return score;
+}
+
+int parallel_evaluate_for(const Position& pos, int perspective) {
+  const int base = evaluate_for(pos, perspective);
+  if (g_parallel_profile <= 1) return base;
+  return base + strategic_side_score(pos, perspective) - strategic_side_score(pos, -perspective);
+}
+
 int parallel_quiescence(const Position& pos, int alpha, int beta, int ply, int qdepth) {
   int terminal = 0;
   if (repetition_score(pos, ply, terminal)) return terminal;
   if (++g_nodes >= g_node_limit) {
     g_parallel_complete = false;
-    return evaluate_for(pos, pos.turn);
+    return parallel_evaluate_for(pos, pos.turn);
   }
   const bool checked = is_check(pos, pos.turn);
-  const int stand = evaluate_for(pos, pos.turn);
+  const int stand = parallel_evaluate_for(pos, pos.turn);
   if (!checked) {
     if (stand >= beta) return beta;
     if (stand > alpha) alpha = stand;
   }
-  if (qdepth >= 4) return checked ? stand - 200 : alpha;
+  const int qlimit = g_parallel_profile >= 4 ? 6 : g_parallel_profile >= 3 ? 5 : 4;
+  if (qdepth >= qlimit) return checked ? stand - 200 : alpha;
 
   MoveList moves;
   generate_legal(pos, moves);
@@ -67,13 +196,19 @@ int parallel_quiescence(const Position& pos, int alpha, int beta, int ply, int q
   for (int step = 0; step < moves.count; ++step) {
     const int i = (offset + step) % moves.count;
     const Move& move = moves.items[i];
-    const bool tactical = checked || (move.from >= 0 && pos.board[move.to] != 0) || move.promote;
-    if (!tactical) continue;
     Position next;
-    apply_move(pos, move, next);
+    bool next_ready = false;
+    bool tactical = checked || (move.from >= 0 && pos.board[move.to] != 0) || move.promote;
+    if (!tactical && g_parallel_profile >= 3) {
+      apply_move(pos, move, next);
+      next_ready = true;
+      tactical = is_check(next, next.turn);
+    }
+    if (!tactical) continue;
+    if (!next_ready) apply_move(pos, move, next);
     if (!push_search_history(next, pos.turn)) {
       g_parallel_complete = false;
-      return evaluate_for(pos, pos.turn);
+      return parallel_evaluate_for(pos, pos.turn);
     }
     const int score = -parallel_quiescence(next, -beta, -alpha, ply + 1, qdepth + 1);
     pop_search_history();
@@ -92,7 +227,7 @@ int parallel_negamax(const Position& pos, int depth, int alpha, int beta, int pl
   if (repetition_score(pos, ply, terminal)) return terminal;
   if (g_nodes >= g_node_limit) {
     g_parallel_complete = false;
-    return evaluate_for(pos, pos.turn);
+    return parallel_evaluate_for(pos, pos.turn);
   }
   ++g_nodes;
   const int original_alpha = alpha;
@@ -122,7 +257,7 @@ int parallel_negamax(const Position& pos, int depth, int alpha, int beta, int pl
     apply_move(pos, moves.items[i], next);
     if (!push_search_history(next, pos.turn)) {
       g_parallel_complete = false;
-      return evaluate_for(pos, pos.turn);
+      return parallel_evaluate_for(pos, pos.turn);
     }
     const int score = -parallel_negamax(next, depth - 1, -beta, -alpha, ply + 1);
     pop_search_history();
@@ -142,7 +277,8 @@ int parallel_negamax(const Position& pos, int depth, int alpha, int beta, int pl
   return best;
 }
 
-int32_t parallel_root_score(const Position& root, const Move& requested, int max_depth, int node_limit, int lane) {
+int32_t parallel_root_score(const Position& root, const Move& requested, int max_depth, int node_limit, int lane, int profile) {
+  g_parallel_profile = profile < 0 ? 0 : profile > 4 ? 4 : profile;
   if (repetition_code(root) != 0) return kParallelInvalidScore;
   MoveList legal;
   generate_legal(root, legal);
@@ -171,7 +307,7 @@ int32_t parallel_root_score(const Position& root, const Move& requested, int max
   apply_move(root, verified, next);
   if (!push_search_history(next, root.turn)) {
     g_parallel_complete = false;
-    return evaluate_for(root, root.turn);
+    return parallel_evaluate_for(root, root.turn);
   }
   const int score = -parallel_negamax(next, max_depth - 1, -kInfinity, kInfinity, 1);
   pop_search_history();
@@ -187,14 +323,15 @@ int32_t shogi_search_root_move_with_history(
   int32_t encoded_move,
   int32_t max_depth,
   int32_t node_limit,
-  int32_t lane
+  int32_t lane,
+  int32_t profile
 ) {
   Position pos;
   Move move;
   if (!load_position(position_count, pos)) return kParallelInvalidScore;
   if (!load_search_history(history_word_count, pos)) return kParallelInvalidScore;
   if (!decode_external_move(encoded_move, move)) return kParallelInvalidScore;
-  return parallel_root_score(pos, move, max_depth, node_limit, lane);
+  return parallel_root_score(pos, move, max_depth, node_limit, lane, profile);
 }
 
 int32_t shogi_parallel_search_complete() { return g_parallel_complete ? 1 : 0; }

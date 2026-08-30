@@ -2,7 +2,7 @@
 import { scoreCpuRootMove, sameCpuMove } from './cpu';
 import { isCheck, legalMoves, positionKey, repetitionStatus } from './engine';
 import { loadWasmShogiEngine } from './wasm';
-import type { Move, Position, RepetitionStatus } from './types';
+import type { CpuLevel, Move, Position, RepetitionStatus } from './types';
 import type { WasmShogiEngine } from './wasm';
 
 interface WarmupMessage {
@@ -23,6 +23,8 @@ interface SearchMessage {
   depth:number;
   nodeLimit:number;
   lane:number;
+  level:CpuLevel;
+  profileCode:number;
 }
 
 type RootWorkerMessage=WarmupMessage|InitMessage|SearchMessage;
@@ -102,7 +104,7 @@ self.onmessage=async(event:MessageEvent<RootWorkerMessage>)=>{
     return;
   }
 
-  const {jobId,move,depth,nodeLimit,lane}=message;
+  const {jobId,move,depth,nodeLimit,lane,level,profileCode}=message;
   try{
     const position=rootPosition;
     if(!position)throw new Error('CPU_ROOT_NOT_INITIALIZED');
@@ -112,7 +114,7 @@ self.onmessage=async(event:MessageEvent<RootWorkerMessage>)=>{
     if(engine){
       try{
         assertRootParity(engine,position);
-        const result=engine.searchRootMove(position,official,depth,nodeLimit,lane);
+        const result=engine.searchRootMove(position,official,depth,nodeLimit,lane,profileCode);
         const response:RootJobResponse={
           type:'result',jobId,ok:true,score:result.score,depth,
           nodesVisited:result.nodesVisited,complete:result.complete,wasmUsed:true,
@@ -123,7 +125,7 @@ self.onmessage=async(event:MessageEvent<RootWorkerMessage>)=>{
         // Rule parity, ABI or search failures use the independent TypeScript path.
       }
     }
-    const fallback=scoreCpuRootMove(position,official,depth,Math.min(140,Math.max(40,Math.trunc(nodeLimit/100))));
+    const fallback=scoreCpuRootMove(position,official,depth,Math.min(180,Math.max(50,Math.trunc(nodeLimit/90))),level);
     const response:RootJobResponse={
       type:'result',jobId,ok:true,score:fallback.score,
       depth:fallback.completedDepth||depth,nodesVisited:fallback.nodesVisited,
