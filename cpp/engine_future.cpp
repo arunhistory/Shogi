@@ -4,12 +4,68 @@ namespace {
 constexpr int kFutureHandCredits = 6;
 constexpr int kFutureCheckCredits = 2;
 constexpr int kFutureDepthCap = 18;
+constexpr int kForecastTableSize = 1 << 17;
+
+struct ForecastTtEntry {
+  uint64_t key = 0;
+  int32_t score = 0;
+  int32_t move = -1;
+  int16_t depth = -1;
+  uint8_t flag = 0;  // 1 exact, 2 lower, 3 upper
+};
+
+struct ForecastAtlasEntry {
+  uint64_t key = 0;
+  int32_t move = -1;
+  int32_t score = 0;
+  int16_t depth = -1;
+  uint16_t observations = 0;
+};
+
+ForecastTtEntry g_forecast_tt[kForecastTableSize] = {};
+ForecastAtlasEntry g_forecast_atlas[kForecastTableSize] = {};
+int32_t g_forecast_tt_hits = 0;
+int32_t g_forecast_atlas_hits = 0;
 
 uint64_t future_state_key(const Position& pos, int hand_credits, int check_credits) {
   uint64_t key = contextual_tt_key(pos);
   key ^= static_cast<uint64_t>(hand_credits + 1) * 0x9e3779b97f4a7c15ULL;
   key ^= static_cast<uint64_t>(check_credits + 1) * 0xbf58476d1ce4e5b9ULL;
   return key;
+}
+
+uint64_t forecast_atlas_key(const Position& pos) {
+  // History is deliberately excluded here. The atlas is used only for move
+  // ordering, never as a score cutoff, so equal board+hand+turn states reached
+  // by different paths can safely share forecast guidance without weakening
+  // repetition/perpetual-check correctness.
+  return hash_position(pos);
+}
+
+int32_t forecast_atlas_move(const Position& pos) {
+  const uint64_t key = forecast_atlas_key(pos);
+  const ForecastAtlasEntry& entry = g_forecast_atlas[key & (kForecastTableSize - 1)];
+  if (entry.key != key || entry.move < 0) return -1;
+  ++g_forecast_atlas_hits;
+  return entry.move;
+}
+
+void update_forecast_atlas(const Position& pos, int depth, int32_t move, int score) {
+  if (move < 0) return;
+  const uint64_t key = forecast_atlas_key(pos);
+  ForecastAtlasEntry& entry = g_forecast_atlas[key & (kForecastTableSize - 1)];
+  if (entry.key != key || depth >= entry.depth) {
+    const uint16_t observations = entry.key == key && entry.observations < 65535
+      ? static_cast<uint16_t>(entry.observations + 1)
+      : static_cast<uint16_t>(1);
+    entry.key = key;
+    entry.move = move;
+    entry.score = score;
+    entry.depth = static_cast<int16_t>(depth);
+    entry.observations = observations;
+  } else if (entry.key == key && entry.observations < 65535) {
+    ++entry.observations;
+  }
 }
 
 int future_lane_offset(const Position& pos, int count, int ply) {
@@ -29,8 +85,8 @@ bool future_capture(const Position& pos, const Move& move) {
   return move.from >= 0 && move.to >= 0 && pos.board[move.to] != 0;
 }
 
-int future_move_order_score(const Position& pos, const Move& move, int32_t tt_move) {
-  int score = move_order_score(pos, move, tt_move);
+int future_move_order_score(const Position& pos, const Move& move, int32_t preferred_move) {
+  int score = move_order_score(pos, move, preferred_move);
   if (future_capture(pos, move)) {
     const int captured = base_kind(kind_of(pos.board[move.to]));
     score += 30000 + piece_value(captured) * 20;
@@ -53,10 +109,10 @@ int future_move_order_score(const Position& pos, const Move& move, int32_t tt_mo
   return score;
 }
 
-void order_future_moves(const Position& pos, MoveList& list, int32_t tt_move) {
+void order_future_moves(const Position& pos, MoveList& list, int32_t preferred_move) {
   if (list.count <= 1) return;
   int scores[kMaxMoves] = {};
-  for (int i = 0; i < list.count; ++i) scores[i] = future_move_order_score(pos, list.items[i], tt_move);
+  for (int i = 0; i < list.count; ++i) scores[i] = future_move_order_score(pos, list.items[i], preferred_move);
   for (int i = 0; i < list.count; ++i) {
     int best = i;
     for (int j = i + 1; j < list.count; ++j) if (scores[j] > scores[best]) best = j;
@@ -91,20 +147,17 @@ FutureBudget future_child_budget(
   const bool captured = future_capture(pos, move);
   const bool gave_check = is_check(next, next.turn);
 
-  // A captured piece becomes a new future move generator, but extending every
-  // capture wastes the search budget. If depth >= 3, ordinary full-width
-  // search already reaches: capture -> opponent reply -> capturer's next turn,
-  // where all legal drops are generated. Only a capture near the horizon needs
-  // extra plies to guarantee that newly created hand is actually usable.
+  // A captured piece is a new future move generator. Ordinary full-width
+  // search already reaches the capturer's next turn when depth >= 3, so only
+  // horizon captures are extended far enough to expose every legal drop that
+  // the newly acquired hand piece creates.
   if (captured && next_hand > 0 && depth < 3) {
-    extension = 3 - depth;  // depth 1 => +2, depth 2 => +1.
+    extension = 3 - depth;
     const int spend = extension > next_hand ? next_hand : extension;
     extension = spend;
     next_hand -= spend;
   }
 
-  // A check extension is needed only at the horizon. Deeper checks are already
-  // covered by normal search and extending all of them would overgrow one line.
   if (gave_check && next_check > 0 && depth <= 1) {
     if (extension == 0) extension = 1;
     --next_check;
@@ -130,27 +183,20 @@ int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qde
     if (stand >= beta) return beta;
     if (stand > alpha) alpha = stand;
   }
-  // Full-width future search is the primary computation. The horizon gets one
-  // tactical verification ply only, preventing leaf tactics from consuming the
-  // budget intended to compare sibling hand-created futures.
   if (qdepth >= 1) return checked ? stand - 200 : alpha;
 
   MoveList moves;
   generate_legal(pos, moves);
   if (moves.count == 0) return checked ? -kMateScore + ply : 0;
-  order_future_moves(pos, moves, -1);
+  const int32_t atlas_move = forecast_atlas_move(pos);
+  order_future_moves(pos, moves, atlas_move);
   const int offset = future_lane_offset(pos, moves.count, ply + qdepth);
   for (int step = 0; step < moves.count; ++step) {
     const Move& move = moves.items[(offset + step) % moves.count];
     Position next;
     apply_move(pos, move, next);
     const bool checking = is_check(next, next.turn);
-    // Full-width search has already enumerated ordinary hand drops. At the
-    // horizon continue only tactical captures, promotions and checking drops.
-    const bool tactical = checked
-      || future_capture(pos, move)
-      || move.promote
-      || checking;
+    const bool tactical = checked || future_capture(pos, move) || move.promote || checking;
     if (!tactical) continue;
     if (!push_search_history(next, pos.turn)) {
       g_parallel_complete = false;
@@ -188,21 +234,23 @@ int future_negamax(
 
   const int original_alpha = alpha;
   const uint64_t key = future_state_key(pos, hand_credits, check_credits);
-  TtEntry& entry = g_tt[key & (kTtSize - 1)];
-  int32_t tt_move = -1;
-  if (entry.key == key && entry.generation == g_generation) {
-    tt_move = entry.move;
+  ForecastTtEntry& entry = g_forecast_tt[key & (kForecastTableSize - 1)];
+  int32_t preferred_move = -1;
+  if (entry.key == key && entry.depth >= 0) {
+    ++g_forecast_tt_hits;
+    preferred_move = entry.move;
     if (entry.depth >= depth) {
       if (entry.flag == 1) return entry.score;
       if (entry.flag == 2 && entry.score >= beta) return entry.score;
       if (entry.flag == 3 && entry.score <= alpha) return entry.score;
     }
   }
+  if (preferred_move < 0) preferred_move = forecast_atlas_move(pos);
 
   MoveList moves;
   generate_legal(pos, moves);
   if (moves.count == 0) return is_check(pos, pos.turn) ? -kMateScore + ply : 0;
-  order_future_moves(pos, moves, tt_move);
+  order_future_moves(pos, moves, preferred_move);
   const int offset = future_lane_offset(pos, moves.count, ply);
 
   int best = -kInfinity;
@@ -223,8 +271,6 @@ int future_negamax(
       score = -future_negamax(next, budget.depth, -beta, -alpha, ply + 1, budget.hand_credits, budget.check_credits);
       first = false;
     } else {
-      // Principal-variation search keeps every legal future available while
-      // spending fewer nodes proving branches that cannot beat the current PV.
       score = -future_negamax(next, budget.depth, -alpha - 1, -alpha, ply + 1, budget.hand_credits, budget.check_credits);
       if (g_parallel_complete && score > alpha && score < beta) {
         score = -future_negamax(next, budget.depth, -beta, -alpha, ply + 1, budget.hand_credits, budget.check_credits);
@@ -243,15 +289,17 @@ int future_negamax(
     }
   }
 
-  // Never cache a truncated subtree as an exact future. This keeps the state
-  // graph reuse safe when a job reaches its node ceiling.
+  // Only complete subtrees become exact forecast memory. The path-independent
+  // atlas is guidance only and therefore safe to reuse across transpositions.
   if (g_parallel_complete) {
-    entry.key = key;
-    entry.depth = static_cast<int16_t>(depth);
-    entry.score = best;
-    entry.move = best_move;
-    entry.generation = g_generation;
-    entry.flag = best <= original_alpha ? 3 : best >= beta ? 2 : 1;
+    if (entry.key != key || depth >= entry.depth) {
+      entry.key = key;
+      entry.depth = static_cast<int16_t>(depth);
+      entry.score = best;
+      entry.move = best_move;
+      entry.flag = best <= original_alpha ? 3 : best >= beta ? 2 : 1;
+    }
+    update_forecast_atlas(pos, depth, best_move, best);
   }
   return best;
 }
@@ -275,16 +323,13 @@ int32_t future_root_score(const Position& root, const Move& requested, int max_d
 
   if (max_depth < 1) max_depth = 1;
   if (max_depth > 12) max_depth = 12;
-  g_node_limit = node_limit < 100 ? 100 : node_limit > 250000 ? 250000 : node_limit;
+  g_node_limit = node_limit < 100 ? 100 : node_limit > 2000000 ? 2000000 : node_limit;
   g_nodes = 0;
   g_parallel_complete = true;
   g_parallel_profile = 4;
   g_parallel_lane = static_cast<uint32_t>(lane < 0 ? -lane : lane);
-  ++g_generation;
-  if (g_generation == 0) {
-    std::memset(g_tt, 0, sizeof(g_tt));
-    ++g_generation;
-  }
+  g_forecast_tt_hits = 0;
+  g_forecast_atlas_hits = 0;
 
   Position next;
   apply_move(root, verified, next);
@@ -331,5 +376,8 @@ int32_t shogi_search_future_root_move_with_history(
   if (!decode_external_move(encoded_move, move)) return kParallelInvalidScore;
   return future_root_score(pos, move, max_depth, node_limit, lane);
 }
+
+int32_t shogi_forecast_tt_hits() { return g_forecast_tt_hits; }
+int32_t shogi_forecast_atlas_hits() { return g_forecast_atlas_hits; }
 
 }
