@@ -1,20 +1,20 @@
 {
   "version": 2,
   "service": "shogi-system",
-  "githubCommit": "2a2ef9866b7ca451acb487da822072399cec3fd9",
+  "githubCommit": "5591a6a09589c735fa6847fa8f9aea2b85c15256",
   "mainModule": {
     "name": "index-v2.js",
     "url": "https://arunhistory.github.io/Shogi/deploy/index-v2.js",
-    "sha256": "c5d6d8a7c1b84500d377aea96e4ce8388ae749d4ff6bda11ab71f12095fc708f",
+    "sha256": "c25fbeac8d8543ff1461f829107132c380b2c2978a5a051367d90d909dbdf171",
     "bytes": 62300,
     "contentType": "application/javascript+module"
   },
   "modules": [
     {
-      "name": "7fbfafe9f5b4dddbc5d8780a47d18f963a58ebe5-shogi_engine.wasm",
-      "url": "https://arunhistory.github.io/Shogi/deploy/7fbfafe9f5b4dddbc5d8780a47d18f963a58ebe5-shogi_engine.wasm",
-      "sha256": "d4f647960a3b31a44a00e7c838c00ea6a33e35d2f9b5c52f68e2d0af6c8e0660",
-      "bytes": 908566,
+      "name": "6120ba35c21785d739add30645ce2a0658b5c51b-shogi_engine.wasm",
+      "url": "https://arunhistory.github.io/Shogi/deploy/6120ba35c21785d739add30645ce2a0658b5c51b-shogi_engine.wasm",
+      "sha256": "eb99c1f87fefedd29dbfba0667aa412595d14033d0c7256b569639f0277aca85",
+      "bytes": 911364,
       "contentType": "application/wasm"
     }
   ]

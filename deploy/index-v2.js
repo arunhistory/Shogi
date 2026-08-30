@@ -814,7 +814,7 @@ __name(encodeBase64Url, "encodeBase64Url");
 import { DurableObject as DurableObject2 } from "cloudflare:workers";
 
 // src/runtime/wasm-engine.ts
-import shogiWasmModule from "./7fbfafe9f5b4dddbc5d8780a47d18f963a58ebe5-shogi_engine.wasm";
+import shogiWasmModule from "./6120ba35c21785d739add30645ce2a0658b5c51b-shogi_engine.wasm";
 var POSITION_MAGIC = 1397245769;
 var POSITION_WORDS = 97;
 var MAX_LEGAL_MOVES = 768;
