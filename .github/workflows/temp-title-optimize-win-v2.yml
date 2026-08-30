@@ -7,12 +7,14 @@ on:
     paths:
       - '.github/workflows/temp-title-optimize-win-v2.yml'
       - 'scripts/temp-strip-winning-unused-future.mjs'
+      - 'scripts/temp-strip-winning-unused-gpu.mjs'
       - 'scripts/temp-use-winning-parallel-entry.mjs'
       - 'scripts/temp-title-parallel-equivalence.mjs'
       - 'scripts/temp-patch-title-tempo.mjs'
       - 'scripts/temp-patch-title-parallel-engine.mjs'
       - 'scripts/build-wasm.sh'
       - 'src/game/wasm.ts'
+      - 'src/game/cpu-worker.ts'
       - 'cpp/**'
 
 permissions:
@@ -21,7 +23,7 @@ permissions:
 jobs:
   semantic-equivalence:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,7 +44,7 @@ jobs:
           echo "BASELINE_WASM_BYTES=$(stat -c%s public/wasm/shogi_engine.wasm)"
           echo "BASELINE_WASM_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)"
           node scripts/temp-title-parallel-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-baseline.json
-      - name: Remove only unused future exports
+      - name: Remove only unused winning-path exports
         run: node scripts/temp-strip-winning-unused-future.mjs
       - name: Build export-stripped engine
         run: |
@@ -70,8 +72,26 @@ jobs:
         run: |
           node scripts/temp-patch-title-tempo.mjs
           node scripts/temp-patch-title-parallel-engine.mjs
-      - name: Verify optimized application and engine
+      - name: Build winning CPU-only route before JS strip
         run: |
           npm run build
+          BASELINE_WORKER=$(find dist/assets -maxdepth 1 -type f -name 'cpu-worker-*.js' | head -n1)
+          echo "BASELINE_CPU_WORKER_BYTES=$(stat -c%s "$BASELINE_WORKER")"
+          echo "BASELINE_DIST_JS_BYTES=$(find dist/assets -maxdepth 1 -type f -name '*.js' -printf '%s\n' | awk '{s+=$1} END{print s}')"
+      - name: Remove unused GPU path from proven CPU-only winner
+        run: node scripts/temp-strip-winning-unused-gpu.mjs
+      - name: Build optimized winning route
+        run: |
+          npm run build
+          OPTIMIZED_WORKER=$(find dist/assets -maxdepth 1 -type f -name 'cpu-worker-*.js' | head -n1)
+          echo "OPTIMIZED_CPU_WORKER_BYTES=$(stat -c%s "$OPTIMIZED_WORKER")"
+          echo "OPTIMIZED_DIST_JS_BYTES=$(find dist/assets -maxdepth 1 -type f -name '*.js' -printf '%s\n' | awk '{s+=$1} END{print s}')"
           node scripts/test-wasm.mjs
           npm audit --audit-level=high
+      - name: Verify optimized winner still beats Pro
+        run: |
+          sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
+          node scripts/title-selfplay-one.mjs 2 | tee /tmp/title-optimized-selfplay.log
+          grep -q '"result":"title-win"' /tmp/title-optimized-selfplay.log
+          grep -q '"titleGpuUses":0' /tmp/title-optimized-selfplay.log
+          echo 'OPTIMIZED_TITLE_WIN:PASS'
