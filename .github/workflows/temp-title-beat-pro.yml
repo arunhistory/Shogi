@@ -36,9 +36,11 @@ jobs:
         run: node scripts/temp-patch-title-tempo.mjs
       - name: Route title through profile-four parallel engine
         run: node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Reinvest title headroom into search
+        run: node scripts/temp-patch-title-deadline.mjs
       - name: Disable WebGPU for CPU strength isolation
         run: sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
-      - name: Build optimized A/B variant
+      - name: Build optimized strength variant
         run: npm run build
       - name: Run optimized title versus pro as gote
         run: node scripts/title-selfplay-one.mjs 2
