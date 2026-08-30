@@ -17,7 +17,6 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           gpu=Path('src/game/title-gpu-forecast.ts')
           text=gpu.read_text()
@@ -48,7 +47,7 @@ jobs:
           assert text.count(median)==1, 'median anchor mismatch'
           text=text.replace(median,helper)
 
-          old='''function fuseGpuForecast(\n  ranked:RankedStageMove[],\n  usable:Move[],\n  forecast:TitleGpuForecastFabricResult,\n):RankedStageMove[]{\n  if(!forecast.supported||forecast.rootScores.length!==usable.length)return ranked;\n  const finite=forecast.rootScores.filter(Number.isFinite);\n  if(!finite.length)return ranked;\n  const minimum=Math.min(...finite);\n  const maximum=Math.max(...finite);\n  const span=Math.max(1,maximum-minimum);\n  const scoreByMove=new Map<string,number>();\n  usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));\n  return ranked.map(item=>{\n    const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;\n    const normalized=(gpuScore-minimum)/span;\n    const forecastBonus=Math.round((normalized-0.5)*240);\n    return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};\n  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);\n}\n'''
+          old='''function fuseGpuForecast(\n  ranked:RankedStageMove[],\n  usable:Move[],\n  forecast:TitleGpuForecastFabricResult,\n):RankedStageMove[]{\n  if(!forecast.supported||!forecast.complete||forecast.rootScores.length!==usable.length)return ranked;\n  const finite=forecast.rootScores.filter(Number.isFinite);\n  if(!finite.length)return ranked;\n  const minimum=Math.min(...finite);\n  const maximum=Math.max(...finite);\n  const span=Math.max(1,maximum-minimum);\n  const scoreByMove=new Map<string,number>();\n  usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));\n  return ranked.map(item=>{\n    const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;\n    const normalized=(gpuScore-minimum)/span;\n    const forecastBonus=Math.round((normalized-0.5)*240);\n    return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};\n  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);\n}\n'''
           new='''function fuseGpuForecast(\n  ranked:RankedStageMove[],\n  usable:Move[],\n  forecast:TitleGpuForecastFabricResult,\n):RankedStageMove[]{\n  if(!forecast.supported||!forecast.complete||forecast.rootScores.length!==usable.length)return ranked;\n  const finite=forecast.rootScores.filter(Number.isFinite);\n  if(!finite.length)return ranked;\n  const minimum=Math.min(...finite);\n  const maximum=Math.max(...finite);\n  const span=Math.max(1,maximum-minimum);\n  const scoreByMove=new Map<string,number>();\n  usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));\n  const safeFloor=maximum-900;\n  const safe=ranked.filter(item=>item.score>=800000||(scoreByMove.get(moveKey(item.move))??minimum)>=safeFloor);\n  const pool=safe.length?safe:ranked;\n  return pool.map(item=>{\n    const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;\n    const normalized=(gpuScore-minimum)/span;\n    const forecastBonus=Math.round((normalized-0.5)*1600);\n    return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};\n  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);\n}\n'''
           assert text.count(old)==1, f'fusion anchor mismatch: {text.count(old)}'
           text=text.replace(old,new)
@@ -57,15 +56,15 @@ jobs:
           text=text.replace("const fastRank=rankCpuMovesFast(position,level).map","const fastRank=rankCpuMovesFast(position,level==='title'?'pro':level).map")
 
           old='''  const deadline=Date.now()+profile.replyDeadlineMs;\n  let gpuForecast:TitleGpuForecastFabricResult|null=null;\n  if(level==='title')gpuForecast=await runTitleGpuForecastFabric(position,usable).catch(()=>null);\n\n  const slots=ensureWorkerPool(level,wasmUrl,position);\n'''
-          new='''  const hardDeadline=Date.now()+(level==='title'?1900:profile.replyDeadlineMs);\n  const deadline=Date.now()+profile.replyDeadlineMs;\n  const gpuForecastPromise:Promise<TitleGpuForecastFabricResult|null>=level==='title'\n    ?runTitleGpuForecastFabric(position,usable).catch(()=>null)\n    :Promise.resolve(null);\n\n  const slots=ensureWorkerPool(level,wasmUrl,position);\n'''
+          new='''  const searchStarted=Date.now();\n  const hardDeadline=searchStarted+(level==='title'?1900:profile.replyDeadlineMs);\n  const deadline=searchStarted+profile.replyDeadlineMs;\n  const gpuForecastPromise:Promise<TitleGpuForecastFabricResult|null>=level==='title'\n    ?runTitleGpuForecastFabric(position,usable).catch(()=>null)\n    :Promise.resolve(null);\n\n  const slots=ensureWorkerPool(level,wasmUrl,position);\n'''
           assert text.count(old)==1, f'gpu scheduling anchor mismatch: {text.count(old)}'
           text=text.replace(old,new)
 
           assert text.count('profileCode:profile.profileCode,')==1, 'profile code anchor mismatch'
           text=text.replace('profileCode:profile.profileCode,',"profileCode:level==='title'?3:profile.profileCode,")
 
-          anchor='''  if(finalRanked.length){\n    if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);\n'''
-          replacement='''  const gpuForecast=level==='title'?await settleBeforeDeadline(gpuForecastPromise,hardDeadline):null;\n\n  if(finalRanked.length){\n    if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);\n'''
+          anchor='''  if(finalRanked.length){\n    if(gpuForecast?.supported&&gpuForecast.complete)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);\n'''
+          replacement='''  const gpuForecast=level==='title'?await settleBeforeDeadline(gpuForecastPromise,hardDeadline):null;\n\n  if(finalRanked.length){\n    if(gpuForecast?.supported&&gpuForecast.complete)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);\n'''
           assert text.count(anchor)==1, f'gpu settle anchor mismatch: {text.count(anchor)}'
           text=text.replace(anchor,replacement)
           cpu.write_text(text)
