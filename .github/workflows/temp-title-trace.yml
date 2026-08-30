@@ -1,4 +1,4 @@
-name: temp-title-vs-pro-trace
+name: temp-title-vs-pro-fair-stage
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  trace:
+  fair-stage:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -30,16 +30,27 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Disable WebGPU only for CPU strength trace
+      - name: Isolate CPU and reject partial title stages
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           p=Path('scripts/title-selfplay-one.mjs')
           s=p.read_text()
           old="'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',"
           if old not in s:
               raise SystemExit('GPU_FLAGS_NOT_FOUND')
           p.write_text(s.replace(old,"'--disable-gpu',",1))
+
+          p=Path('src/game/cpu-worker.ts')
+          s=p.read_text()
+          old="    const ranked=rankStageResults(survivors,completed,level);\n    if(ranked.length){"
+          new="    const ranked=rankStageResults(survivors,completed,level);\n    if(level==='title'&&ranked.length!==survivors.length)break;\n    if(ranked.length){"
+          if old not in s:
+              raise SystemExit('TITLE_STAGE_RANK_ANCHOR_NOT_FOUND')
+          p.write_text(s.replace(old,new,1))
           PY
-      - name: Run title versus pro trace as gote
+      - name: Build A/B variant
+        run: npm run build
+      - name: Run fair-stage title versus pro as gote
         run: node scripts/title-selfplay-one.mjs 2
