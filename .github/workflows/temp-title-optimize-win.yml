@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 jobs:
-  optimize-and-selfplay:
+  same-runner-ab:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,30 +34,37 @@ jobs:
           sudo apt-get install -y emscripten
       - name: Install application dependencies
         run: npm ci
-      - name: Build frozen winning compiler baseline
+      - name: Build frozen winning baseline WASM
         run: |
           sh scripts/build-wasm.sh
           BASE_RAW=$(stat -c%s public/wasm/shogi_engine.wasm)
           BASE_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)
           echo "BASELINE_RUNTIME_SIZE:{\"wasm\":${BASE_RAW},\"wasmGzip\":${BASE_GZIP}}"
-          cp public/wasm/shogi_engine.wasm /tmp/shogi_engine_baseline.wasm
-      - name: Apply compiler-only optimization
-        run: node scripts/temp-patch-title-compiler-opt.mjs
-      - name: Build compiler-optimized runtime
-        run: |
-          sh scripts/build-wasm.sh
-          OPT_RAW=$(stat -c%s public/wasm/shogi_engine.wasm)
-          OPT_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)
-          BASE_RAW=$(stat -c%s /tmp/shogi_engine_baseline.wasm)
-          BASE_GZIP=$(gzip -c /tmp/shogi_engine_baseline.wasm | wc -c)
-          echo "OPTIMIZED_RUNTIME_SIZE:{\"wasm\":${OPT_RAW},\"wasmGzip\":${OPT_GZIP},\"baselineWasm\":${BASE_RAW},\"baselineWasmGzip\":${BASE_GZIP}}"
       - name: Apply frozen winning title tempo discipline
         run: node scripts/temp-patch-title-tempo.mjs
       - name: Route frozen winning title through profile-four parallel engine
         run: node scripts/temp-patch-title-parallel-engine.mjs
       - name: Disable WebGPU exactly as winning baseline
         run: sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
-      - name: Build optimized winning variant
+      - name: Build frozen winning baseline app
         run: npm run build
-      - name: Run frozen title versus pro as gote
-        run: node scripts/title-selfplay-one.mjs 2
+      - name: Run frozen winning baseline on this runner
+        run: |
+          echo 'BASELINE_GAME_START'
+          node scripts/title-selfplay-one.mjs 2
+          echo 'BASELINE_GAME_END'
+      - name: Apply compiler-only optimization
+        run: node scripts/temp-patch-title-compiler-opt.mjs
+      - name: Build compiler-optimized WASM
+        run: |
+          sh scripts/build-wasm.sh
+          OPT_RAW=$(stat -c%s public/wasm/shogi_engine.wasm)
+          OPT_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)
+          echo "OPTIMIZED_RUNTIME_SIZE:{\"wasm\":${OPT_RAW},\"wasmGzip\":${OPT_GZIP}}"
+      - name: Build compiler-optimized app
+        run: npm run build
+      - name: Run compiler-optimized title on same runner
+        run: |
+          echo 'OPTIMIZED_GAME_START'
+          node scripts/title-selfplay-one.mjs 2
+          echo 'OPTIMIZED_GAME_END'
