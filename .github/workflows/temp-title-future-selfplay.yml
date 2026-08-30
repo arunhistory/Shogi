@@ -30,6 +30,20 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
+      - name: Patch WGSL reserved identifier for validation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/game/title-gpu-forecast.ts')
+          s=p.read_text()
+          old='let target=select(ownKing,enemyKing,side==perspective);'
+          if old not in s:
+              raise SystemExit('WGSL_TARGET_ANCHOR_NOT_FOUND')
+          s=s.replace(old,'let pressureTarget=select(ownKing,enemyKing,side==perspective);',1)
+          s=s.replace('rowOf(target)','rowOf(pressureTarget)',1)
+          s=s.replace('colOf(target)','colOf(pressureTarget)',1)
+          p.write_text(s)
+          PY
       - name: Build application
         run: npm run build
       - name: Diagnose title GPU frontier
