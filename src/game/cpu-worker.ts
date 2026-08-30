@@ -8,6 +8,8 @@ import {
   sameCpuMove,
 } from './cpu';
 import { applyMove, gameOutcome, legalMoves, positionKey } from './engine';
+import { runTitleGpuForecastFabric, warmupTitleGpuForecastFabric } from './title-gpu-forecast';
+import type { TitleGpuForecastFabricResult } from './title-gpu-forecast';
 import type { CpuLevel, Move, Position } from './types';
 
 interface CpuWarmupRequest {
@@ -34,6 +36,10 @@ interface CpuResult {
   logicalJobsPlanned?:number;
   logicalJobsCompleted?:number;
   physicalWorkers?:number;
+  gpuForecastUsed?:boolean;
+  gpuForecastLayers?:number;
+  gpuForecastSamples?:number;
+  gpuForecastMs?:number;
 }
 
 interface CpuResponse {
@@ -98,6 +104,22 @@ function median(values:number[]):number{
   if(ordered.length===0)return-Infinity;
   const middle=Math.floor(ordered.length/2);
   return ordered.length%2?ordered[middle]!:(ordered[middle-1]!+ordered[middle]!)/2;
+}
+
+async function settleBeforeDeadline<T>(promise:Promise<T>,deadline:number):Promise<T|null>{
+  const remaining=deadline-Date.now()-10;
+  if(remaining<=0)return null;
+  return await new Promise(resolve=>{
+    let settled=false;
+    const finish=(value:T|null)=>{
+      if(settled)return;
+      settled=true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer=setTimeout(()=>finish(null),remaining);
+    promise.then(value=>finish(value)).catch(()=>finish(null));
+  });
 }
 
 class RootWorkerSlot {
@@ -238,11 +260,6 @@ function rankStageResults(candidates:Move[],completed:CompletedJob[],level:CpuLe
 
 function titleForecastCohort(ranked:RankedStageMove[],stage:number,minSurvivors:number):Move[]{
   if(ranked.length<=1)return ranked.map(item=>item.move);
-
-  // Numerical-weather-prediction style nesting: the first two forecast cycles
-  // keep the complete legal domain. Only after every candidate has received
-  // broad forecasts do we increase resolution around futures whose uncertainty
-  // envelopes can still overlap the current best forecast.
   if(stage<2)return ranked.map(item=>item.move);
 
   const best=ranked[0]!;
@@ -258,6 +275,27 @@ function titleForecastCohort(ranked:RankedStageMove[],stage:number,minSurvivors:
 function titleLaneTarget(stage:number,physicalWorkers:number):number{
   const desired=[2,3,4,6,8,12][Math.min(stage,5)]??12;
   return Math.max(1,Math.min(desired,physicalWorkers,12));
+}
+
+function fuseGpuForecast(
+  ranked:RankedStageMove[],
+  usable:Move[],
+  forecast:TitleGpuForecastFabricResult,
+):RankedStageMove[]{
+  if(!forecast.supported||forecast.rootScores.length!==usable.length)return ranked;
+  const finite=forecast.rootScores.filter(Number.isFinite);
+  if(!finite.length)return ranked;
+  const minimum=Math.min(...finite);
+  const maximum=Math.max(...finite);
+  const span=Math.max(1,maximum-minimum);
+  const scoreByMove=new Map<string,number>();
+  usable.forEach((move,index)=>scoreByMove.set(moveKey(move),forecast.rootScores[index]??minimum));
+  return ranked.map(item=>{
+    const gpuScore=scoreByMove.get(moveKey(item.move))??minimum;
+    const normalized=(gpuScore-minimum)/span;
+    const forecastBonus=Math.round((normalized-0.5)*240);
+    return{...item,score:item.score+forecastBonus,low:item.low+forecastBonus,high:item.high+forecastBonus};
+  }).sort((a,b)=>b.score-a.score||b.depth-a.depth||b.completeSamples-a.completeSamples||b.nodes-a.nodes);
 }
 
 async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):Promise<{result:CpuResult;wasmUsed:boolean}>{
@@ -281,6 +319,9 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
   }
 
   const deadline=Date.now()+profile.replyDeadlineMs;
+  const gpuForecastPromise:Promise<TitleGpuForecastFabricResult|null>=level==='title'
+    ?runTitleGpuForecastFabric(position,usable).catch(()=>null)
+    :Promise.resolve(null);
   const slots=ensureWorkerPool(level,wasmUrl,position);
   let jobsIssued=0;
   let jobsCompleted=0;
@@ -298,8 +339,6 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     const requestedLanes=level==='title'
       ?titleLaneTarget(stage,slots.length)
       :Math.min(profile.lanes,1+stage);
-    // Never spend the end of the logical budget on a partial forecast lane:
-    // every surviving root move receives the same number of ensemble members.
     const fairLaneCount=Math.max(1,Math.min(requestedLanes,Math.floor(remainingJobs/survivors.length)));
     const growth=level==='title'?1.9:1.7;
     const nodeLimit=Math.min(220_000,Math.trunc(profile.nodeBase*Math.pow(growth,stage)));
@@ -340,9 +379,13 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
     stage++;
   }
 
+  const gpuForecast=level==='title'?await settleBeforeDeadline(gpuForecastPromise,deadline):null;
   if(finalRanked.length){
+    if(gpuForecast?.supported)finalRanked=fuseGpuForecast(finalRanked,usable,gpuForecast);
     const varied=chooseCpuMoveFromRanked(level,position.ply,finalRanked);
     if(varied&&usable.some(move=>sameCpuMove(move,varied)))bestMove=varied;
+  }else if(gpuForecast?.supported&&gpuForecast.bestMoveIndex!==null){
+    bestMove=usable[gpuForecast.bestMoveIndex]??bestMove;
   }
   if(!usable.some(move=>sameCpuMove(move,bestMove)))bestMove=usable[0]!;
   return{
@@ -353,6 +396,10 @@ async function parallelSearch(position:Position,level:CpuLevel,wasmUrl?:string):
       logicalJobsPlanned:profile.logicalJobTarget,
       logicalJobsCompleted:jobsCompleted,
       physicalWorkers:slots.length,
+      gpuForecastUsed:!!gpuForecast?.supported,
+      gpuForecastLayers:gpuForecast?.supported?gpuForecast.layers:0,
+      gpuForecastSamples:gpuForecast?.supported?gpuForecast.totalSamples:0,
+      gpuForecastMs:gpuForecast?.supported?gpuForecast.elapsedMs:0,
     },
     wasmUsed,
   };
@@ -362,6 +409,7 @@ self.onmessage=async(event:MessageEvent<CpuWorkerRequest>)=>{
   const message=event.data;
   if(message.type==='warmup'){
     ensureWorkerPool(message.level,message.wasmUrl,message.position);
+    if(message.level==='title')void warmupTitleGpuForecastFabric();
     return;
   }
 
@@ -374,7 +422,7 @@ self.onmessage=async(event:MessageEvent<CpuWorkerRequest>)=>{
   }catch(error){
     const fallback=chooseCpuFallbackMove(position,level);
     const response:CpuResponse=fallback
-      ?{requestId,positionKey:key,ok:true,wasmUsed:false,result:{move:fallback,completedDepth:0,nodesVisited:0,logicalJobsCompleted:0,physicalWorkers:workerPool.length}}
+      ?{requestId,positionKey:key,ok:true,wasmUsed:false,result:{move:fallback,completedDepth:0,nodesVisited:0,logicalJobsCompleted:0,physicalWorkers:workerPool.length,gpuForecastUsed:false,gpuForecastLayers:0,gpuForecastSamples:0,gpuForecastMs:0}}
       :{requestId,positionKey:key,ok:false,wasmUsed:false,error:error instanceof Error?error.message:'CPU_SEARCH_FAILED'};
     self.postMessage(response);
   }
