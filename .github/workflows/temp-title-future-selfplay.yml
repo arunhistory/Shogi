@@ -30,7 +30,7 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
-      - name: Isolate CPU and enable title evaluation only in runner
+      - name: Isolate CPU and patch title A/B variant in runner
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -46,9 +46,14 @@ jobs:
           old="profileCode:level==='title'?3:profile.profileCode,"
           if old not in s:
               raise SystemExit('TITLE_PROFILE_ANCHOR_NOT_FOUND')
-          p.write_text(s.replace(old,"profileCode:profile.profileCode,",1))
+          s=s.replace(old,"profileCode:profile.profileCode,",1)
+          old="""    const ranked=rankStageResults(survivors,completed,level);\n    if(ranked.length){"""
+          new="""    const ranked=rankStageResults(survivors,completed,level);\n    if(level==='title'&&(ranked.length!==survivors.length||ranked.some(item=>item.completeSamples===0)))break;\n    if(ranked.length){"""
+          if old not in s:
+              raise SystemExit('TITLE_STAGE_ANCHOR_NOT_FOUND')
+          p.write_text(s.replace(old,new,1))
           PY
       - name: Build A/B variant
         run: npm run build
-      - name: Run title profile four versus pro as gote
+      - name: Run complete-stage title versus pro as gote
         run: node scripts/title-selfplay-one.mjs 2
