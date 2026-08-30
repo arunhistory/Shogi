@@ -9,6 +9,8 @@ export interface TitleGpuForecastFabricResult {
   elapsedMs:number;
   samplesPerSecond:number;
   signaturesChecked:number;
+  rootScores:number[];
+  bestMoveIndex:number|null;
   reason?:string;
 }
 
@@ -69,8 +71,8 @@ function encodeMove(move:Move):number{
     return (to|(127<<7)|(dropCodes[move.drop]<<14))>>>0;
   }
   if(!move.from)throw new Error('GPU_MOVE_SOURCE_MISSING');
-  const from=move.from[0]*9+move.from[1];
-  return (to|(from<<7)|(move.promote?1<<18:0))>>>0;
+  const source=move.from[0]*9+move.from[1];
+  return (to|(source<<7)|(move.promote?1<<18:0))>>>0;
 }
 
 const shader=`
@@ -87,7 +89,8 @@ struct Params {
 @group(0) @binding(3) var<uniform> params:Params;
 
 var<workgroup> sharedState:array<i32,96>;
-var<workgroup> laneSums:array<u32,64>;
+var<workgroup> laneScores:array<i32,64>;
+var<workgroup> kingSquares:array<u32,2>;
 
 fn baseKind(kind:u32)->u32{
   if(kind==9u){return 1u;}
@@ -113,22 +116,27 @@ fn absCode(value:i32)->u32{
   return u32(select(value,-value,value<0));
 }
 
+fn pieceValue(kind:u32)->i32{
+  if(kind==1u){return 100;}
+  if(kind==2u){return 320;}
+  if(kind==3u){return 360;}
+  if(kind==4u){return 520;}
+  if(kind==5u){return 600;}
+  if(kind==6u){return 900;}
+  if(kind==7u){return 1000;}
+  if(kind==8u){return 0;}
+  if(kind==9u||kind==10u||kind==11u||kind==12u){return 600;}
+  if(kind==13u){return 1250;}
+  if(kind==14u){return 1350;}
+  return 0;
+}
+
 fn handOffset(side:i32)->u32{
   return select(88u,81u,side>0);
 }
 
-fn mix32(value:u32)->u32{
-  var x=value;
-  x=x^(x>>16u);
-  x=x*0x7feb352du;
-  x=x^(x>>15u);
-  x=x*0x846ca68bu;
-  x=x^(x>>16u);
-  return x;
-}
-
 fn applyRootMove(encoded:u32){
-  let to=encoded&0x7fu;
+  let target=encoded&0x7fu;
   let source=(encoded>>7u)&0x7fu;
   let drop=(encoded>>14u)&0x0fu;
   let promote=((encoded>>18u)&1u)==1u;
@@ -136,12 +144,12 @@ fn applyRootMove(encoded:u32){
   let offset=handOffset(side);
 
   if(drop!=0u){
-    sharedState[to]=side*i32(drop);
+    sharedState[target]=side*i32(drop);
     let handIndex=offset+(drop-1u);
     sharedState[handIndex]=sharedState[handIndex]-1;
   }else{
     let piece=sharedState[source];
-    let captured=sharedState[to];
+    let captured=sharedState[target];
     if(captured!=0){
       let kind=baseKind(absCode(captured));
       if(kind>=1u&&kind<=7u){
@@ -152,9 +160,75 @@ fn applyRootMove(encoded:u32){
     var kind=absCode(piece);
     if(promote){kind=promotedKind(kind);}
     sharedState[source]=0;
-    sharedState[to]=side*i32(kind);
+    sharedState[target]=side*i32(kind);
   }
   sharedState[95]=-side;
+}
+
+fn sideOf(value:i32)->i32{
+  return select(-1,1,value>0);
+}
+
+fn chebyshev(a:u32,b:u32)->u32{
+  let ay=i32(a/9u);
+  let ax=i32(a%9u);
+  let by=i32(b/9u);
+  let bx=i32(b%9u);
+  let dy=abs(ay-by);
+  let dx=abs(ax-bx);
+  return u32(max(dy,dx));
+}
+
+fn sampleFeature(square:u32,partner:u32,perspective:i32)->i32{
+  let value=sharedState[square];
+  if(value==0){return 0;}
+  let side=sideOf(value);
+  let kind=absCode(value);
+  let sign=select(-1,1,side==perspective);
+  let y=i32(square/9u);
+  let x=i32(square%9u);
+  let center=4-abs(x-4);
+  let progress=select(y,8-y,perspective>0);
+  var score=sign*(pieceValue(kind)/25+center+max(0,progress-3));
+
+  let enemyKing=select(kingSquares[0],kingSquares[1],perspective>0);
+  let ownKing=select(kingSquares[1],kingSquares[0],perspective>0);
+  let enemyDistance=chebyshev(square,enemyKing);
+  let ownDistance=chebyshev(square,ownKing);
+  if(side==perspective&&enemyDistance<=2u){score=score+i32(3u-enemyDistance)*10;}
+  if(side!=perspective&&ownDistance<=2u){score=score-i32(3u-ownDistance)*12;}
+
+  let partnerValue=sharedState[partner];
+  if(partnerValue!=0&&sideOf(partnerValue)!=side){
+    let distance=chebyshev(square,partner);
+    if(distance<=2u){score=score+sign*i32(3u-distance)*3;}
+  }
+  return score;
+}
+
+fn exactMaterial(perspective:i32)->i32{
+  var score=0;
+  var square=0u;
+  loop{
+    if(square>=81u){break;}
+    let value=sharedState[square];
+    if(value!=0){
+      let sign=select(-1,1,sideOf(value)==perspective);
+      score=score+sign*pieceValue(absCode(value));
+    }
+    square=square+1u;
+  }
+  var kind=0u;
+  loop{
+    if(kind>=7u){break;}
+    let senteCount=sharedState[81u+kind];
+    let goteCount=sharedState[88u+kind];
+    let value=pieceValue(kind+1u);
+    let delta=select(goteCount-senteCount,senteCount-goteCount,perspective>0);
+    score=score+delta*value;
+    kind=kind+1u;
+  }
+  return score;
 }
 
 @compute @workgroup_size(64)
@@ -176,36 +250,51 @@ fn forecast(
   if(lane==0u){
     let moveIndex=layer%params.moveCount;
     applyRootMove(rootMoves[moveIndex]);
+    kingSquares[0]=81u;
+    kingSquares[1]=81u;
+    var square=0u;
+    loop{
+      if(square>=81u){break;}
+      let value=sharedState[square];
+      if(absCode(value)==8u){
+        if(value>0){kingSquares[0]=square;}else{kingSquares[1]=square;}
+      }
+      square=square+1u;
+    }
   }
   workgroupBarrier();
 
-  var x=mix32(params.salt^((layer+1u)*0x9e3779b9u)^((lane+1u)*0x85ebca6bu));
-  var acc=x^(layer<<16u)^lane;
+  let perspective=-sharedState[95];
+  var acc=0;
   var iteration=0u;
   loop{
     if(iteration>=params.iterations){break;}
-    let square=x%81u;
-    let handIndex=81u+((x>>8u)%14u);
-    let boardValue=bitcast<u32>(sharedState[square]);
-    let handValue=bitcast<u32>(sharedState[handIndex]);
-    let turnValue=bitcast<u32>(sharedState[95]);
-    let feature=boardValue^(handValue<<7u)^(turnValue<<19u)^(iteration*0x27d4eb2du);
-    acc=mix32(acc^feature^(square*0x165667b1u));
-    x=mix32(x+acc+0x9e3779b9u);
+    let sampleIndex=iteration*${LANES_PER_LAYER}u+lane;
+    let square=sampleIndex%81u;
+    let partner=(sampleIndex/81u+layer*13u+lane*7u)%81u;
+    let handIndex=81u+((sampleIndex/6561u+lane)%14u);
+    let handSide=select(-1,1,handIndex<88u);
+    let handKind=(handIndex-81u)%7u;
+    let handSign=select(-1,1,handSide==perspective);
+    let handFeature=handSign*sharedState[handIndex]*(pieceValue(handKind+1u)/80);
+    acc=acc+sampleFeature(square,partner,perspective)+handFeature;
     iteration=iteration+1u;
   }
-  laneSums[lane]=acc;
+  laneScores[lane]=acc;
   workgroupBarrier();
 
   if(lane==0u){
-    var combined=0x811c9dc5u^layer;
+    var combined=0;
     var i=0u;
     loop{
       if(i>=${LANES_PER_LAYER}u){break;}
-      combined=mix32(combined^laneSums[i]^(i*0x01000193u));
+      combined=combined+laneScores[i];
       i=i+1u;
     }
-    output[layer]=combined;
+    let average=combined/i32(${LANES_PER_LAYER*SAMPLES_PER_LANE});
+    let score=exactMaterial(perspective)+average*18;
+    output[layer*2u]=bitcast<u32>(score);
+    output[layer*2u+1u]=0x5a170000u^(layer+1u);
   }
 }
 `;
@@ -256,12 +345,12 @@ export async function runTitleGpuForecastFabric(position:Position,moves:Move[]):
   if(!active)return{
     supported:false,layers:FORECAST_LAYERS,lanesPerLayer:LANES_PER_LAYER,
     samplesPerLane:SAMPLES_PER_LANE,totalSamples,elapsedMs:0,samplesPerSecond:0,
-    signaturesChecked:0,reason:'WEBGPU_UNAVAILABLE',
+    signaturesChecked:0,rootScores:[],bestMoveIndex:null,reason:'WEBGPU_UNAVAILABLE',
   };
   if(moves.length===0)return{
     supported:false,layers:FORECAST_LAYERS,lanesPerLayer:LANES_PER_LAYER,
     samplesPerLane:SAMPLES_PER_LANE,totalSamples,elapsedMs:0,samplesPerSecond:0,
-    signaturesChecked:0,reason:'NO_LEGAL_MOVES',
+    signaturesChecked:0,rootScores:[],bestMoveIndex:null,reason:'NO_LEGAL_MOVES',
   };
 
   const {device,pipeline,bindGroupLayout}=active;
@@ -271,7 +360,8 @@ export async function runTitleGpuForecastFabric(position:Position,moves:Move[]):
 
   const state=encodePosition(position);
   const encodedMoves=new Uint32Array(moves.map(encodeMove));
-  const outputBytes=FORECAST_LAYERS*Uint32Array.BYTES_PER_ELEMENT;
+  const outputWords=FORECAST_LAYERS*2;
+  const outputBytes=outputWords*Uint32Array.BYTES_PER_ELEMENT;
   const params=new Uint32Array([SAMPLES_PER_LANE,encodedMoves.length,POSITION_WORDS,0x5a17c3e1]);
 
   const stateBuffer=device.createBuffer({size:state.byteLength,usage:usage.STORAGE|usage.COPY_DST});
@@ -305,10 +395,24 @@ export async function runTitleGpuForecastFabric(position:Position,moves:Move[]):
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(mapMode.READ);
     const elapsedMs=performance.now()-start;
-    const signatures=new Uint32Array(readback.getMappedRange().slice(0));
+    const raw=new Uint32Array(readback.getMappedRange().slice(0));
     let signaturesChecked=0;
-    for(const value of signatures)if(value!==0)signaturesChecked++;
+    const sums=new Array<number>(moves.length).fill(0);
+    const counts=new Array<number>(moves.length).fill(0);
+    for(let layer=0;layer<FORECAST_LAYERS;layer++){
+      const score=new Int32Array(new Uint32Array([raw[layer*2]??0]).buffer)[0]??0;
+      const signature=raw[layer*2+1]??0;
+      if(signature!==0)signaturesChecked++;
+      const moveIndex=layer%moves.length;
+      sums[moveIndex]=(sums[moveIndex]??0)+score;
+      counts[moveIndex]=(counts[moveIndex]??0)+1;
+    }
     readback.unmap();
+    const rootScores=sums.map((sum,index)=>Math.round(sum/Math.max(1,counts[index]??0)));
+    let bestMoveIndex:number|null=null;
+    for(let index=0;index<rootScores.length;index++){
+      if(bestMoveIndex===null||rootScores[index]!>rootScores[bestMoveIndex]!)bestMoveIndex=index;
+    }
     return{
       supported:true,
       layers:FORECAST_LAYERS,
@@ -318,6 +422,8 @@ export async function runTitleGpuForecastFabric(position:Position,moves:Move[]):
       elapsedMs,
       samplesPerSecond:elapsedMs>0?totalSamples/(elapsedMs/1000):0,
       signaturesChecked,
+      rootScores,
+      bestMoveIndex,
     };
   }finally{
     for(const buffer of [stateBuffer,moveBuffer,outputBuffer,paramsBuffer,readback])buffer.destroy();
