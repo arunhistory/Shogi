@@ -30,5 +30,16 @@ jobs:
         run: sh scripts/build-wasm.sh
       - name: Install application dependencies
         run: npm ci
+      - name: Disable WebGPU only for strength isolation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/title-selfplay-one.mjs')
+          s=p.read_text()
+          old="'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',"
+          if old not in s:
+              raise SystemExit('GPU_FLAGS_NOT_FOUND')
+          p.write_text(s.replace(old,"'--disable-gpu',",1))
+          PY
       - name: Run title versus pro
         run: node scripts/title-selfplay-one.mjs 1
