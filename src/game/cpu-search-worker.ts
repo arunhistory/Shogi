@@ -42,6 +42,7 @@ interface RootJobResponse {
 }
 
 let rootPosition:Position|null=null;
+let rootLegalMoves:Move[]=[];
 let rootWasmUrl:string|undefined;
 let cachedWasmUrl:string|null=null;
 let cachedEngine:WasmShogiEngine|null=null;
@@ -80,7 +81,7 @@ function sameRepetition(a:RepetitionStatus,b:RepetitionStatus):boolean{
 function assertRootParity(engine:WasmShogiEngine,position:Position):void{
   const key=positionKey(position);
   if(parityKey===key)return;
-  const officialLegal=legalMoves(position);
+  const officialLegal=rootLegalMoves.length?rootLegalMoves:legalMoves(position);
   if(engine.isCheck(position,position.turn)!==isCheck(position,position.turn))throw new Error('WASM_CHECK_MISMATCH');
   const expected=officialLegal.map(moveKey).sort();
   const observed=engine.legalMoves(position).map(moveKey).sort();
@@ -98,6 +99,7 @@ self.onmessage=async(event:MessageEvent<RootWorkerMessage>)=>{
   }
   if(message.type==='init'){
     rootPosition=message.position;
+    rootLegalMoves=legalMoves(message.position);
     rootWasmUrl=message.wasmUrl;
     parityKey=null;
     void engineFor(rootWasmUrl);
@@ -108,7 +110,7 @@ self.onmessage=async(event:MessageEvent<RootWorkerMessage>)=>{
   try{
     const position=rootPosition;
     if(!position)throw new Error('CPU_ROOT_NOT_INITIALIZED');
-    const official=legalMoves(position).find(candidate=>sameCpuMove(candidate,move));
+    const official=rootLegalMoves.find(candidate=>sameCpuMove(candidate,move));
     if(!official)throw new Error('CPU_ROOT_MOVE_ILLEGAL');
     const engine=await engineFor(rootWasmUrl);
     if(engine){
