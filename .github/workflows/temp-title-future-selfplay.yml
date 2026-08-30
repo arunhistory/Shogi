@@ -41,5 +41,5 @@ jobs:
               raise SystemExit('GPU_FLAGS_NOT_FOUND')
           p.write_text(s.replace(old,"'--disable-gpu',",1))
           PY
-      - name: Run title versus pro
-        run: node scripts/title-selfplay-one.mjs 1
+      - name: Run title versus pro as gote
+        run: node scripts/title-selfplay-one.mjs 2
