@@ -27,8 +27,67 @@ ForecastAtlasEntry g_forecast_atlas[kForecastTableSize] = {};
 int32_t g_forecast_tt_hits = 0;
 int32_t g_forecast_atlas_hits = 0;
 
+// Title forecasting previously rebuilt the FNV history-context hash from the
+// complete root+search path at every TT probe. Numerical forecasting revisits
+// enormous numbers of nearby states, so the title path keeps the exact same
+// context hash incrementally. The stack mirrors push/pop_search_history and
+// therefore changes computation cost, not repetition semantics or key values.
+uint64_t g_future_context_stack[kMaxSearchPath + 1] = {};
+int g_future_context_depth = 0;
+
+uint64_t future_context_mix_byte(uint64_t hash, uint8_t value) {
+  hash ^= value;
+  hash *= 1099511628211ULL;
+  return hash;
+}
+
+uint64_t future_context_mix_u64(uint64_t hash, uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    hash = future_context_mix_byte(hash, static_cast<uint8_t>((value >> shift) & 0xff));
+  }
+  return hash;
+}
+
+uint64_t future_context_extend(uint64_t hash, const SearchHistoryEntry& entry) {
+  hash = future_context_mix_u64(hash, entry.key.primary);
+  hash = future_context_mix_u64(hash, entry.key.secondary);
+  hash = future_context_mix_byte(hash, static_cast<uint8_t>(entry.mover + 1));
+  hash = future_context_mix_byte(hash, entry.gave_check);
+  return hash;
+}
+
+void future_context_reset() {
+  g_future_context_depth = 0;
+  // At a root job g_search_path_count is zero; this one legacy pass hashes the
+  // observed game history. Every forecast descendant then updates in O(1).
+  g_future_context_stack[0] = history_context_hash();
+}
+
+bool future_push_search_history(const Position& next, int mover) {
+  if (!push_search_history(next, mover)) return false;
+  if (g_future_context_depth >= kMaxSearchPath) {
+    pop_search_history();
+    return false;
+  }
+  const SearchHistoryEntry& entry = g_search_path[g_search_path_count - 1];
+  g_future_context_stack[g_future_context_depth + 1] =
+    future_context_extend(g_future_context_stack[g_future_context_depth], entry);
+  ++g_future_context_depth;
+  return true;
+}
+
+void future_pop_search_history() {
+  if (g_future_context_depth > 0) --g_future_context_depth;
+  pop_search_history();
+}
+
+uint64_t future_contextual_tt_key(const Position& pos) {
+  const uint64_t context = g_future_context_stack[g_future_context_depth];
+  return hash_position(pos) ^ ((context << 1) | (context >> 63));
+}
+
 uint64_t future_state_key(const Position& pos, int hand_credits, int check_credits) {
-  uint64_t key = contextual_tt_key(pos);
+  uint64_t key = future_contextual_tt_key(pos);
   key ^= static_cast<uint64_t>(hand_credits + 1) * 0x9e3779b97f4a7c15ULL;
   key ^= static_cast<uint64_t>(check_credits + 1) * 0xbf58476d1ce4e5b9ULL;
   return key;
@@ -198,12 +257,12 @@ int future_quiescence(const Position& pos, int alpha, int beta, int ply, int qde
     const bool checking = is_check(next, next.turn);
     const bool tactical = checked || future_capture(pos, move) || move.promote || checking;
     if (!tactical) continue;
-    if (!push_search_history(next, pos.turn)) {
+    if (!future_push_search_history(next, pos.turn)) {
       g_parallel_complete = false;
       return parallel_evaluate_for(pos, pos.turn);
     }
     const int score = -future_quiescence(next, -beta, -alpha, ply + 1, qdepth + 1);
-    pop_search_history();
+    future_pop_search_history();
     if (score >= beta) return beta;
     if (score > alpha) alpha = score;
     if (g_nodes >= g_node_limit) {
@@ -260,7 +319,7 @@ int future_negamax(
     const Move& move = moves.items[(offset + step) % moves.count];
     Position next;
     apply_move(pos, move, next);
-    if (!push_search_history(next, pos.turn)) {
+    if (!future_push_search_history(next, pos.turn)) {
       g_parallel_complete = false;
       return parallel_evaluate_for(pos, pos.turn);
     }
@@ -271,12 +330,14 @@ int future_negamax(
       score = -future_negamax(next, budget.depth, -beta, -alpha, ply + 1, budget.hand_credits, budget.check_credits);
       first = false;
     } else {
+      // Principal-variation search keeps every legal future available while
+      // spending fewer nodes proving branches that cannot beat the current PV.
       score = -future_negamax(next, budget.depth, -alpha - 1, -alpha, ply + 1, budget.hand_credits, budget.check_credits);
       if (g_parallel_complete && score > alpha && score < beta) {
         score = -future_negamax(next, budget.depth, -beta, -alpha, ply + 1, budget.hand_credits, budget.check_credits);
       }
     }
-    pop_search_history();
+    future_pop_search_history();
 
     if (score > best) {
       best = score;
@@ -330,10 +391,11 @@ int32_t future_root_score(const Position& root, const Move& requested, int max_d
   g_parallel_lane = static_cast<uint32_t>(lane < 0 ? -lane : lane);
   g_forecast_tt_hits = 0;
   g_forecast_atlas_hits = 0;
+  future_context_reset();
 
   Position next;
   apply_move(root, verified, next);
-  if (!push_search_history(next, root.turn)) {
+  if (!future_push_search_history(next, root.turn)) {
     g_parallel_complete = false;
     return parallel_evaluate_for(root, root.turn);
   }
@@ -354,7 +416,7 @@ int32_t future_root_score(const Position& root, const Move& requested, int max_d
     budget.hand_credits,
     budget.check_credits
   );
-  pop_search_history();
+  future_pop_search_history();
   return score;
 }
 }  // namespace
