@@ -8,6 +8,8 @@ function replaceOnce(source,oldText,newText,label){
 const buildPath='scripts/build-wasm.sh';
 let build=await readFile(buildPath,'utf8');
 for(const [line,label] of [
+  ['  -Wl,--export=shogi_evaluate_material_codes \\\n','MATERIAL_CODES_EXPORT'],
+  ['  -Wl,--export=shogi_evaluate_material \\\n','MATERIAL_EXPORT'],
   ['  -Wl,--export=shogi_search_future_root_move_with_history \\\n','FUTURE_EXPORT'],
   ['  -Wl,--export=shogi_forecast_tt_hits \\\n','FORECAST_TT_EXPORT'],
   ['  -Wl,--export=shogi_forecast_atlas_hits \\\n','FORECAST_ATLAS_EXPORT'],
