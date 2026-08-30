@@ -27,4 +27,6 @@ emcc cpp/engine_future.cpp \
   -Wl,--export=shogi_search_future_root_move_with_history \
   -Wl,--export=shogi_parallel_search_complete \
   -Wl,--export=shogi_nodes_searched \
+  -Wl,--export=shogi_forecast_tt_hits \
+  -Wl,--export=shogi_forecast_atlas_hits \
   -o public/wasm/shogi_engine.wasm
