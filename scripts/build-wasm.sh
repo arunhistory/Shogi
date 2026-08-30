@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 mkdir -p public/wasm
-emcc cpp/engine_parallel.cpp \
+emcc cpp/engine_future.cpp \
   -O3 \
   -std=c++17 \
   -include initializer_list \
@@ -24,6 +24,7 @@ emcc cpp/engine_parallel.cpp \
   -Wl,--export=shogi_search_best_move \
   -Wl,--export=shogi_search_best_move_with_history \
   -Wl,--export=shogi_search_root_move_with_history \
+  -Wl,--export=shogi_search_future_root_move_with_history \
   -Wl,--export=shogi_parallel_search_complete \
   -Wl,--export=shogi_nodes_searched \
   -o public/wasm/shogi_engine.wasm
