@@ -136,7 +136,7 @@ fn handOffset(side:i32)->u32{
 }
 
 fn applyRootMove(encoded:u32){
-  let target=encoded&0x7fu;
+  let destination=encoded&0x7fu;
   let source=(encoded>>7u)&0x7fu;
   let drop=(encoded>>14u)&0x0fu;
   let promote=((encoded>>18u)&1u)==1u;
@@ -144,12 +144,12 @@ fn applyRootMove(encoded:u32){
   let offset=handOffset(side);
 
   if(drop!=0u){
-    sharedState[target]=side*i32(drop);
+    sharedState[destination]=side*i32(drop);
     let handIndex=offset+(drop-1u);
     sharedState[handIndex]=sharedState[handIndex]-1;
   }else{
     let piece=sharedState[source];
-    let captured=sharedState[target];
+    let captured=sharedState[destination];
     if(captured!=0){
       let kind=baseKind(absCode(captured));
       if(kind>=1u&&kind<=7u){
@@ -160,7 +160,7 @@ fn applyRootMove(encoded:u32){
     var kind=absCode(piece);
     if(promote){kind=promotedKind(kind);}
     sharedState[source]=0;
-    sharedState[target]=side*i32(kind);
+    sharedState[destination]=side*i32(kind);
   }
   sharedState[95]=-side;
 }
