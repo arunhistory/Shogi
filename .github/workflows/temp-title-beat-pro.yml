@@ -34,7 +34,7 @@ jobs:
         run: node scripts/temp-patch-title-tempo.mjs
       - name: Route title through profile-four parallel engine
         run: node scripts/temp-patch-title-parallel-engine.mjs
-      - name: Reserve title reply headroom
+      - name: Reserve title reply headroom at 1450ms
         run: node scripts/temp-patch-title-deadline.mjs
       - name: Disable WebGPU for CPU strength isolation
         run: sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
