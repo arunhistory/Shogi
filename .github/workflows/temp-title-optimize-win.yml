@@ -1,0 +1,69 @@
+name: temp-title-optimize-win
+
+on:
+  push:
+    branches:
+      - 'temp/title-optimize-win'
+    paths:
+      - '.github/workflows/temp-title-optimize-win.yml'
+      - 'scripts/temp-patch-title-strip-unused-future.mjs'
+      - 'scripts/temp-patch-title-tempo.mjs'
+      - 'scripts/temp-patch-title-parallel-engine.mjs'
+      - 'scripts/build-wasm.sh'
+      - 'src/game/wasm.ts'
+      - 'cpp/**'
+
+permissions:
+  contents: read
+
+jobs:
+  optimize-and-selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: temp/title-optimize-win
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install application dependencies
+        run: npm ci
+      - name: Build frozen winning runtime before strip
+        run: |
+          sh scripts/build-wasm.sh
+          BASE_RAW=$(stat -c%s public/wasm/shogi_engine.wasm)
+          BASE_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)
+          BASE_WASM_TS=$(wc -c < src/game/wasm.ts)
+          BASE_BUILD_SH=$(wc -c < scripts/build-wasm.sh)
+          echo "BASELINE_RUNTIME_SIZE:{\"wasm\":${BASE_RAW},\"wasmGzip\":${BASE_GZIP},\"wasmTs\":${BASE_WASM_TS},\"buildSh\":${BASE_BUILD_SH}}"
+          cp public/wasm/shogi_engine.wasm /tmp/shogi_engine_baseline.wasm
+      - name: Strip unused future runtime only
+        run: node scripts/temp-patch-title-strip-unused-future.mjs
+      - name: Build stripped runtime
+        run: |
+          sh scripts/build-wasm.sh
+          OPT_RAW=$(stat -c%s public/wasm/shogi_engine.wasm)
+          OPT_GZIP=$(gzip -c public/wasm/shogi_engine.wasm | wc -c)
+          OPT_WASM_TS=$(wc -c < src/game/wasm.ts)
+          OPT_BUILD_SH=$(wc -c < scripts/build-wasm.sh)
+          BASE_RAW=$(stat -c%s /tmp/shogi_engine_baseline.wasm)
+          BASE_GZIP=$(gzip -c /tmp/shogi_engine_baseline.wasm | wc -c)
+          echo "OPTIMIZED_RUNTIME_SIZE:{\"wasm\":${OPT_RAW},\"wasmGzip\":${OPT_GZIP},\"wasmTs\":${OPT_WASM_TS},\"buildSh\":${OPT_BUILD_SH}}"
+          test "$OPT_RAW" -lt "$BASE_RAW"
+          test "$OPT_GZIP" -lt "$BASE_GZIP"
+      - name: Apply frozen winning title tempo discipline
+        run: node scripts/temp-patch-title-tempo.mjs
+      - name: Route frozen winning title through profile-four parallel engine
+        run: node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Disable WebGPU exactly as winning baseline
+        run: sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
+      - name: Build optimized winning variant
+        run: npm run build
+      - name: Run frozen title versus pro as gote
+        run: node scripts/title-selfplay-one.mjs 2
