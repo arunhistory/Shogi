@@ -1,0 +1,104 @@
+name: title-44win-internal-name-shortening
+
+on:
+  push:
+    branches:
+      - 'optimize-title-44win-source-shortening'
+    paths:
+      - '.github/workflows/title-44win-internal-name-shortening.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-44win-source-shortening
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Reconstruct exact 44-ply winner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=4263b01cfd40dfdb95f26b11f5f556757941dc90' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-incremental-history-hash-v2.mjs?ref=2d15c41db5f7203739a3ebb5ada7873487923545' > /tmp/title-historyhash.mjs
+          node /tmp/title-hotcore.mjs
+          node /tmp/title-historyhash.mjs
+          sh scripts/build-wasm.sh
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          npm test
+          npm run build
+          cp $(find dist/assets -maxdepth 1 -name 'cpu-worker-*.js' -print -quit) /tmp/cpu-worker-before.js
+          wc -c src/game/cpu-worker.ts /tmp/cpu-worker-before.js
+          sha256sum public/wasm/shogi_engine.wasm > /tmp/wasm-before.sha256
+      - name: Shorten internal names only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/game/cpu-worker.ts')
+          s=p.read_text()
+          before=s
+          replacements=[
+            ('private worker:Worker;','private w:Worker;'),
+            ('private position:Position|null=null;','private p:Position|null=null;'),
+            ('private wasmUrl:string|undefined;','private u:string|undefined;'),
+            ('this.worker','this.w'),
+            ('this.position','this.p'),
+            ('this.wasmUrl','this.u'),
+            ('private spawn():Worker{','private s():Worker{'),
+            ('this.spawn()','this.s()'),
+            ('  warmup(wasmUrl?:string){','  a(wasmUrl?:string){'),
+            ('slot.warmup(wasmUrl)','slot.a(wasmUrl)'),
+            ('  prepare(position:Position,wasmUrl?:string){','  q(position:Position,wasmUrl?:string){'),
+            ('slot.prepare(position,wasmUrl)','slot.q(position,wasmUrl)'),
+            ('private replace(){','private r(){'),
+            ('this.replace()','this.r()'),
+            ('  async run(job:RootSearchJob,timeoutMs:number):Promise<RootJobResponse|null>{','  async x(job:RootSearchJob,timeoutMs:number):Promise<RootJobResponse|null>{'),
+            ('slot.run(job,timeout)','slot.x(job,timeout)'),
+            ('  terminate(){this.w.terminate();}','  t(){this.w.terminate();}'),
+            ('workerPool.pop()!.terminate()','workerPool.pop()!.t()'),
+          ]
+          for old,new in replacements:
+            n=s.count(old)
+            if n<1: raise SystemExit(f'ANCHOR_MISSING:{old}')
+            s=s.replace(old,new)
+          if s==before: raise SystemExit('NO_CHANGE')
+          p.write_text(s)
+          print('SOURCE_BYTES_BEFORE',len(before.encode()))
+          print('SOURCE_BYTES_AFTER',len(s.encode()))
+          print('SOURCE_BYTES_SAVED',len(before.encode())-len(s.encode()))
+          PY
+          git diff -- src/game/cpu-worker.ts
+      - name: Verify and build shortened names
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+          after=$(find dist/assets -maxdepth 1 -name 'cpu-worker-*.js' -print -quit)
+          cp "$after" /tmp/cpu-worker-after.js
+          node --check /tmp/cpu-worker-after.js
+          before_bytes=$(wc -c < /tmp/cpu-worker-before.js)
+          after_bytes=$(wc -c < /tmp/cpu-worker-after.js)
+          echo "WORKER_JS_BEFORE_BYTES:$before_bytes"
+          echo "WORKER_JS_AFTER_BYTES:$after_bytes"
+          echo "WORKER_JS_BYTES_SAVED:$((before_bytes-after_bytes))"
+          test "$after_bytes" -lt "$before_bytes"
+          sha256sum public/wasm/shogi_engine.wasm > /tmp/wasm-after.sha256
+          diff -u /tmp/wasm-before.sha256 /tmp/wasm-after.sha256
+          echo 'WASM_IDENTICAL:true'
