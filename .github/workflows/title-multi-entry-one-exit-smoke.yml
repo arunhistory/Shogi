@@ -1,0 +1,103 @@
+name: title-multi-entry-one-exit-smoke
+
+on:
+  push:
+    branches:
+      - 'experiment/title-multi-entry-one-exit'
+    paths:
+      - '.github/workflows/title-multi-entry-one-exit-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-multi-entry-one-exit
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Reconstruct exact canonical 44-ply winner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=4263b01cfd40dfdb95f26b11f5f556757941dc90' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-incremental-history-hash-v2.mjs?ref=2d15c41db5f7203739a3ebb5ada7873487923545' > /tmp/title-historyhash.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/title-pro-acceptance-one.mjs?ref=e17a96401d1b6e3e29b310bae024a162a6306de1' > /tmp/title-pro-acceptance-one.mjs
+          node /tmp/title-hotcore.mjs
+          node /tmp/title-historyhash.mjs
+          sh scripts/build-wasm.sh
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          sha256sum public/wasm/shogi_engine.wasm > /tmp/wasm-before.sha
+          sha256sum src/game/cpu.ts > /tmp/cpu-before.sha
+      - name: Apply N-entry one-exit architecture
+        run: |
+          node scripts/temp-patch-title-multi-entry-one-exit-run.mjs
+          git diff --check
+          sha256sum public/wasm/shogi_engine.wasm > /tmp/wasm-after.sha
+          sha256sum src/game/cpu.ts > /tmp/cpu-after.sha
+          cmp /tmp/wasm-before.sha /tmp/wasm-after.sha
+          cmp /tmp/cpu-before.sha /tmp/cpu-after.sha
+      - name: Expose phase telemetry
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile,writeFile} from 'node:fs/promises';
+          const path='/tmp/title-pro-acceptance-one.mjs';
+          let source=await readFile(path,'utf8');
+          const oldText=`          completedDepth:Number(r.completedDepth??0),`;
+          const newText=`          completedDepth:Number(r.completedDepth??0),
+          titleEntryCount:Number(r.titleEntryCount??0),
+          titleEntryJobsCompleted:Number(r.titleEntryJobsCompleted??0),
+          titleEntryPhaseMs:Number(r.titleEntryPhaseMs??0),
+          titleConvergenceMs:Number(r.titleConvergenceMs??0),`;
+          if(!source.includes(oldText))throw new Error('ACCEPTANCE_TELEMETRY_ANCHOR_NOT_FOUND');
+          await writeFile(path,source.replace(oldText,newText));
+          JS
+      - name: Verify build
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Run one live Title trial
+        run: |
+          node /tmp/title-pro-acceptance-one.mjs '1' 'multi-entry-one-exit-smoke' | tee /tmp/title-smoke.log
+      - name: Validate telemetry
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-smoke.log','utf8');
+          const line=text.split(/\r?\n/).find(v=>v.startsWith('TITLE_ACCEPTANCE_RESULT:'));
+          if(!line)throw new Error('RESULT_MISSING');
+          const result=JSON.parse(line.slice('TITLE_ACCEPTANCE_RESULT:'.length));
+          const titleMoves=result.moveTrace.filter(move=>move.level==='title');
+          if(!titleMoves.length)throw new Error('NO_TITLE_MOVES');
+          if(!titleMoves.some(move=>Number(move.titleEntryCount)>0))throw new Error('MULTI_ENTRY_NOT_ACTIVE');
+          const avg=key=>titleMoves.reduce((sum,m)=>sum+Number(m[key]??0),0)/titleMoves.length;
+          console.log('TITLE_MULTI_ENTRY_SMOKE:'+JSON.stringify({
+            result:result.result,
+            plies:result.plies,
+            titleAvgReplyMs:result.titleAvgReplyMs,
+            titleMaxReplyMs:result.titleMaxReplyMs,
+            titleNodes:result.titleNodes,
+            titleJobs:result.titleJobs,
+            avgEntryCount:avg('titleEntryCount'),
+            avgEntryJobsCompleted:avg('titleEntryJobsCompleted'),
+            avgEntryPhaseMs:avg('titleEntryPhaseMs'),
+            avgConvergenceMs:avg('titleConvergenceMs'),
+          }));
+          JS
