@@ -7,6 +7,7 @@ on:
     paths:
       - 'cpp/title_supercomputer.cpp'
       - 'scripts/temp-patch-title-super-fastpath.mjs'
+      - 'scripts/temp-patch-title-super-metrics.mjs'
       - '.github/workflows/title-supercomputer-build.yml'
 
 permissions:
@@ -26,10 +27,12 @@ jobs:
           sudo apt-get install -y emscripten wabt binaryen
       - name: Apply reproducible SuperTitle fastpath
         run: node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/title_supercomputer_fast.cpp
+      - name: Remove duplicate SuperTitle metric scans
+        run: node scripts/temp-patch-title-super-metrics.mjs /tmp/title_supercomputer_fast.cpp /tmp/title_supercomputer_metrics.cpp
       - name: Build isolated Title supercomputer WASM
         run: |
           mkdir -p public/wasm
-          em++ /tmp/title_supercomputer_fast.cpp \
+          em++ /tmp/title_supercomputer_metrics.cpp \
             -Icpp \
             -O3 \
             -std=c++17 \
