@@ -1,0 +1,115 @@
+name: title-supercomputer-selfhost-edge-single
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - '.github/workflows/title-supercomputer-selfhost-edge-single.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare isolated 22-file SuperTitle function
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/title-edge/functions
+          mkdir -p "$ROOT/main" "$ROOT/title-supercomputer"
+
+          cat > "$ROOT/main/index.ts" <<'TS'
+          console.log('supertitle selfhost main started');
+          Deno.serve(async(req:Request)=>{
+            const serviceName=new URL(req.url).pathname.split('/')[1]??'';
+            if(!serviceName)return new Response('missing function name',{status:400});
+            const envVars=Object.entries(Deno.env.toObject());
+            try{
+              const worker=await EdgeRuntime.userWorkers.create({
+                servicePath:`/home/deno/functions/${serviceName}`,
+                memoryLimitMb:256,
+                workerTimeoutMs:30000,
+                cpuTimeSoftLimitMs:12000,
+                cpuTimeHardLimitMs:20000,
+                noModuleCache:false,
+                envVars,
+              });
+              return await worker.fetch(req);
+            }catch(e){
+              console.error('MAIN_WORKER_ERROR',e);
+              return new Response(JSON.stringify({ok:false,error:String(e)}),{status:500,headers:{'content-type':'application/json'}});
+            }
+          });
+          TS
+
+          {
+            echo "import {runConvergence} from './convergence.ts';"
+            for n in $(seq -w 1 20); do echo "import {run as run${n}} from './specialist-${n}.ts';"; done
+            printf 'const BUDGET=5_000_000;const runners=['
+            for n in $(seq -w 1 20); do if [ "$n" != "01" ]; then printf ','; fi; printf 'run%s' "$n"; done
+            cat <<'TS'
+          ];const json=(v:unknown,status=200)=>new Response(JSON.stringify(v),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});function authorized(req:Request){try{const key=req.headers.get('apikey')??'';const keys=JSON.parse(Deno.env.get('SUPABASE_PUBLISHABLE_KEYS')??'{}');return Object.values(keys).some(v=>v===key);}catch{return false;}}
+          Deno.serve(async(req:Request)=>{if(req.method!=='POST')return json({ok:false,error:'POST_ONLY'},405);if(!authorized(req))return json({ok:false,error:'UNAUTHORIZED'},401);try{const body=await req.json();const action=String(body.action??'');if(action==='specialist'){const id=Number(body.specialist);if(!Number.isInteger(id)||id<1||id>20)throw new Error('INVALID_SPECIALIST');return json({ok:true,result:await runners[id-1](body.positionWords,BUDGET)});}if(action==='converge')return json({ok:true,result:await runConvergence(body.positionWords,body.candidates,BUDGET)});throw new Error('ACTION_MUST_BE_SPECIALIST_OR_CONVERGE');}catch(error){return json({ok:false,error:error instanceof Error?error.message:String(error)},400);}});
+          TS
+          } > "$ROOT/title-supercomputer/index.ts"
+
+          cat > "$ROOT/title-supercomputer/convergence.ts" <<'TS'
+          const WASM_URL='https://raw.githubusercontent.com/arunhistory/Shogi/cf2bbeca4d77a0377b0f6974e5c85b3abc2a0ec1/public/wasm/title_supercomputer.wasm';const WASM_SHA256='f829707ad965a7dddff89eb4919513fa9da14bcf192f0efd5967d034c02855f3';const POSITION_WORDS=97,NODE_BUDGET=5_000_000;
+          type SuperExports={memory:WebAssembly.Memory;shogi_input_buffer:()=>number;shogi_input_capacity:()=>number;shogi_super_search_specialist:(count:number,specialist:number,maxDepth:number,nodeLimit:number)=>number;shogi_super_converge:(positionWords:number,candidateCount:number,maxDepth:number,nodeLimit:number)=>number;shogi_super_best_score:()=>number;shogi_super_nodes_searched:()=>number};let modulePromise:Promise<WebAssembly.Module>|null=null;const hex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
+          async function loadModule(){if(modulePromise)return modulePromise;modulePromise=(async()=>{const response=await fetch(WASM_URL,{cache:'no-store'});if(!response.ok)throw new Error(`WASM_HTTP_${response.status}`);const bytes=await response.arrayBuffer();const digest=hex(await crypto.subtle.digest('SHA-256',bytes));if(digest!==WASM_SHA256)throw new Error('WASM_INTEGRITY_MISMATCH');return await WebAssembly.compile(bytes);})();return modulePromise;}
+          async function instantiate(){const instance=await WebAssembly.instantiate(await loadModule(),{});const e=instance.exports as unknown as Partial<SuperExports>;const memory=e.memory as WebAssembly.Memory|undefined;if(!memory||!(memory.buffer instanceof ArrayBuffer)||typeof e.shogi_input_buffer!=='function'||typeof e.shogi_input_capacity!=='function'||typeof e.shogi_super_search_specialist!=='function'||typeof e.shogi_super_converge!=='function'||typeof e.shogi_super_best_score!=='function'||typeof e.shogi_super_nodes_searched!=='function')throw new Error('WASM_EXPORTS_INVALID');return e as SuperExports;}
+          function normalizePosition(raw:unknown){if(!Array.isArray(raw)||raw.length!==POSITION_WORDS)throw new Error('POSITION_WORDS_MUST_BE_97');const out=new Int32Array(POSITION_WORDS);for(let i=0;i<POSITION_WORDS;i++){const n=Number(raw[i]);if(!Number.isInteger(n)||n<-2147483648||n>2147483647)throw new Error('POSITION_WORD_INVALID');out[i]=n|0;}return out;}function normalizeCandidates(raw:unknown){if(!Array.isArray(raw)||raw.length<1||raw.length>20)throw new Error('CANDIDATES_MUST_BE_1_TO_20');return raw.map(v=>{const n=Number(v);if(!Number.isInteger(n))throw new Error('CANDIDATE_INVALID');return n|0;});}function requireBudget(b:number){if(b!==NODE_BUDGET)throw new Error('NODE_BUDGET_MUST_BE_5000000');}
+          function writeInput(w:SuperExports,pos:Int32Array,candidates:number[]=[]){const capacity=w.shogi_input_capacity(),pointer=w.shogi_input_buffer();if(capacity<POSITION_WORDS+candidates.length)throw new Error('WASM_INPUT_CAPACITY');const input=new Int32Array(w.memory.buffer,pointer,capacity);input.fill(0,0,POSITION_WORDS+candidates.length);input.set(pos,0);for(let i=0;i<candidates.length;i++)input[POSITION_WORDS+i]=candidates[i]|0;}
+          export async function runWasmSpecialist(rawPosition:unknown,budget:number,id:number,label:string){requireBudget(budget);const started=performance.now(),w=await instantiate(),pos=normalizePosition(rawPosition);writeInput(w,pos);const moveCode=w.shogi_super_search_specialist(POSITION_WORDS,id,12,budget);if(moveCode<0)throw new Error('NO_LEGAL_MOVE');return{id,label,moveCode,score:w.shogi_super_best_score(),nodes:w.shogi_super_nodes_searched(),elapsedMs:performance.now()-started};}
+          export async function runConvergence(rawPosition:unknown,rawCandidates:unknown,budget:number){requireBudget(budget);const candidates=normalizeCandidates(rawCandidates),started=performance.now(),w=await instantiate(),pos=normalizePosition(rawPosition);writeInput(w,pos,candidates);const moveCode=w.shogi_super_converge(POSITION_WORDS,candidates.length,14,budget);if(moveCode<0)throw new Error('NO_LEGAL_MOVE');return{phase:'future_convergence',moveCode,score:w.shogi_super_best_score(),nodes:w.shogi_super_nodes_searched(),elapsedMs:performance.now()-started,inputSpecialists:candidates.length};}
+          TS
+
+          labels=(self_king_survival enemy_king_mate own_attack enemy_attack_forecast defense attack_disruption last_move_response own_drop enemy_drop hand_cycle exchange attack_map_change piece_reposition promotion initiative_forcing escape_blockade collapse_detection worst_response long_term anomaly)
+          for i in $(seq 1 20); do
+            n=$(printf '%02d' "$i")
+            label=${labels[$((i-1))]}
+            printf "import {runWasmSpecialist} from './convergence.ts';export const run=(p:unknown,b:number)=>runWasmSpecialist(p,b,%d,'%s');\n" "$i" "$label" > "$ROOT/title-supercomputer/specialist-${n}.ts"
+          done
+          test "$(find "$ROOT/title-supercomputer" -maxdepth 1 -type f | wc -l)" -eq 22
+          echo "SELFHOST_FUNCTION_FILE_COUNT:$(find "$ROOT/title-supercomputer" -maxdepth 1 -type f | wc -l)"
+
+      - name: Start self-hosted Supabase Edge Runtime with expanded CPU limit
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull supabase/edge-runtime:v1.74.0
+          docker run -d --name supertitle-edge -p 9000:9000 \
+            -e 'SUPABASE_PUBLISHABLE_KEYS={"default":"bench"}' \
+            -e EDGE_RUNTIME_WORKER_POOL_SIZE=2 \
+            -v /tmp/title-edge/functions:/home/deno/functions:ro \
+            supabase/edge-runtime:v1.74.0 start --main-service /home/deno/functions/main
+          for i in $(seq 1 40); do
+            if docker logs supertitle-edge 2>&1 | grep -q 'supertitle selfhost main started'; then exit 0; fi
+            sleep 0.25
+          done
+          docker logs supertitle-edge
+          exit 1
+
+      - name: Benchmark one exact 5M specialist on self-hosted runtime
+        shell: bash
+        run: |
+          node <<'NODE'
+          const url='http://127.0.0.1:9000/title-supercomputer';
+          const board=[-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,1,1,1,0,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2];
+          const positionWords=[0x53484749,-1,...board,...Array(14).fill(0)];
+          if(positionWords.length!==97)throw new Error(`POSITION_WORD_COUNT:${positionWords.length}`);
+          const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);const started=performance.now();
+          let response,text;try{response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':'bench'},body:JSON.stringify({action:'specialist',specialist:1,positionWords}),signal:controller.signal});text=await response.text();}finally{clearTimeout(timer);}
+          const wallMs=performance.now()-started;console.log('SELFHOST_EDGE_HTTP:'+JSON.stringify({status:response.status,wallMs,body:text.slice(0,1000)}));if(!response.ok)process.exit(1);const data=JSON.parse(text);if(!data?.ok||Number(data.result?.nodes)!==5_000_000)throw new Error('SELFHOST_EDGE_INVALID_RESULT:'+text);console.log('SELFHOST_EDGE_RESULT:'+JSON.stringify({...data.result,wallMs}));
+          NODE
+
+      - name: Show runtime logs
+        if: always()
+        shell: bash
+        run: |
+          docker logs supertitle-edge 2>&1 || true
+          docker rm -f supertitle-edge >/dev/null 2>&1 || true
