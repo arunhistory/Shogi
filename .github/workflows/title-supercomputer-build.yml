@@ -1,0 +1,68 @@
+name: title-supercomputer-build
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - 'cpp/title_supercomputer.cpp'
+      - '.github/workflows/title-supercomputer-build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+      - name: Build isolated Title supercomputer WASM
+        run: |
+          mkdir -p public/wasm
+          em++ cpp/title_supercomputer.cpp \
+            -O3 \
+            -std=c++17 \
+            -include initializer_list \
+            -s WASM=1 \
+            -s STANDALONE_WASM=1 \
+            --no-entry \
+            -Wl,--export=shogi_input_buffer \
+            -Wl,--export=shogi_input_capacity \
+            -Wl,--export=shogi_legal_move_count \
+            -Wl,--export=shogi_legal_move_at \
+            -Wl,--export=shogi_is_check \
+            -Wl,--export=shogi_is_mate \
+            -Wl,--export=shogi_super_search_specialist \
+            -Wl,--export=shogi_super_converge \
+            -Wl,--export=shogi_super_best_score \
+            -Wl,--export=shogi_super_nodes_searched \
+            -o public/wasm/title_supercomputer.wasm
+          wasm-opt -O4 public/wasm/title_supercomputer.wasm -o /tmp/title_supercomputer.wasm
+          mv /tmp/title_supercomputer.wasm public/wasm/title_supercomputer.wasm
+          wasm-validate public/wasm/title_supercomputer.wasm
+          ls -lh public/wasm/title_supercomputer.wasm
+          sha256sum public/wasm/title_supercomputer.wasm
+      - name: Verify required exports
+        run: |
+          wasm-objdump -x public/wasm/title_supercomputer.wasm | tee /tmp/exports.txt
+          grep -q 'shogi_super_search_specialist' /tmp/exports.txt
+          grep -q 'shogi_super_converge' /tmp/exports.txt
+          grep -q 'shogi_input_buffer' /tmp/exports.txt
+      - name: Commit generated WASM to experiment branch
+        run: |
+          if git diff --quiet -- public/wasm/title_supercomputer.wasm; then
+            echo 'WASM unchanged'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/wasm/title_supercomputer.wasm
+          git commit -m 'build: add experimental Title supercomputer wasm'
+          git push origin HEAD:experiment/title-supercomputer-v1
