@@ -1,0 +1,74 @@
+name: title-82trace-dedup2
+
+on:
+  push:
+    branches:
+      - 'optimize-title-82trace-dedup2'
+    paths:
+      - '.github/workflows/title-82trace-dedup2.yml'
+      - 'scripts/title-82-trace-bench.mjs'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  frozen-trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-82trace-dedup2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build engine and install dependencies
+        run: |
+          sh scripts/build-wasm.sh
+          npm ci
+      - name: Apply candidate and exact winning runtime route
+        run: |
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Verify candidate build
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Recover canonical 82-move winning trace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/arunhistory/Shogi/actions/jobs/99261766337/logs > /tmp/title-82-winning.log
+          node --input-type=module <<'JS'
+          import {readFile,writeFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-82-winning.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.includes('SELFPLAY_RESULT:')&&value.includes('"result":"title-win"')&&value.includes('"plies":82'));
+          if(!line)throw new Error('CANONICAL_82_WIN_RESULT_NOT_FOUND');
+          const marker='SELFPLAY_RESULT:';
+          const result=JSON.parse(line.slice(line.indexOf(marker)+marker.length));
+          if(result.result!=='title-win'||result.plies!==82||result.titleSide!=='gote'||result.proSide!=='sente'||result.moveTrace?.length!==82)throw new Error('CANONICAL_82_WIN_INVALID');
+          await writeFile('/tmp/title-82-winning.json',JSON.stringify(result));
+          console.log(`CANONICAL_82_WIN:${JSON.stringify({plies:result.plies,titleJobs:result.titleJobs,titleMaxReplyMs:result.titleMaxReplyMs,traceMoves:result.moveTrace.length})}`);
+          JS
+      - name: Run frozen winning-trace benchmark
+        run: node scripts/title-82-trace-bench.mjs /tmp/title-82-winning.json | tee /tmp/title-trace.log
+      - name: Evaluate frozen-trace reproduction
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-trace.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.startsWith('TITLE_TRACE_RESULT:'));
+          if(!line)throw new Error('TITLE_TRACE_RESULT_MISSING');
+          const result=JSON.parse(line.slice('TITLE_TRACE_RESULT:'.length));
+          console.log(`TITLE_TRACE_SUMMARY:${JSON.stringify({fullMatch:result.fullMatch,matchedTitleMoves:result.matchedTitleMoves,totalTitleMoves:result.totalTitleMoves,maxMs:result.maxMs,avgMs:result.avgMs,firstMismatch:result.firstMismatch})}`);
+          if(!result.fullMatch)process.exit(1);
+          JS
