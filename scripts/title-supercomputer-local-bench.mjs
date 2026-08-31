@@ -3,7 +3,7 @@ import {readFile} from 'node:fs/promises';
 const files=process.argv.slice(2);
 if(files.length<1)throw new Error('WASM_PATH_REQUIRED');
 const NODE_LIMIT=5_000_000,SPECIALIST=Number(process.env.TITLE_SUPER_SPECIALIST??1);
-const words=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+const words=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
 if(words.length!==97)throw new Error(`POSITION_WORDS:${words.length}`);
 if(!Number.isInteger(SPECIALIST)||SPECIALIST<1||SPECIALIST>20)throw new Error(`SPECIALIST:${SPECIALIST}`);
 
