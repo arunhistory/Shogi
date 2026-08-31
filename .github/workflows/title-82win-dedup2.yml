@@ -1,0 +1,64 @@
+name: title-82win-dedup2
+
+on:
+  push:
+    branches:
+      - 'optimize-title-82win-dedup2'
+    paths:
+      - '.github/workflows/title-82win-dedup2.yml'
+      - 'scripts/temp-patch-title-dedup2.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-82win-dedup2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build WebAssembly engine
+        run: sh scripts/build-wasm.sh
+      - name: Install application dependencies
+        run: npm ci
+      - name: Apply Title duplicate-work elimination
+        run: node scripts/temp-patch-title-dedup2.mjs
+      - name: Apply exact 82-win runtime route
+        run: |
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          sed -i "s/'--enable-unsafe-webgpu','--use-webgpu-adapter=swiftshader','--enable-unsafe-swiftshader',/'--disable-gpu',/" scripts/title-selfplay-one.mjs
+      - name: Verify application and engine
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Run isolated Title-gote versus Pro-sente trial
+        run: node scripts/title-selfplay-one.mjs 2 | tee /tmp/title-dedup2.log
+      - name: Evaluate 82-win regression
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-dedup2.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.startsWith('SELFPLAY_RESULT:'));
+          if(!line)throw new Error('MISSING_SELFPLAY_RESULT');
+          const result=JSON.parse(line.slice('SELFPLAY_RESULT:'.length));
+          const summary={trial:${{ matrix.trial }},result:result.result,plies:result.plies,titleMaxReplyMs:result.titleMaxReplyMs,titleNodes:result.titleNodes,titleJobs:result.titleJobs,proMaxReplyMs:result.proMaxReplyMs};
+          console.log(`TITLE_DEDUP2_SUMMARY:${JSON.stringify(summary)}`);
+          if(result.result!=='title-win'||result.titleSide!=='gote'||result.proSide!=='sente'||result.plies>82||result.titleMaxReplyMs>=2699.9000000000233)process.exit(1);
+          JS
