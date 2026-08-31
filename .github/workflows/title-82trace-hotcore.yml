@@ -1,0 +1,81 @@
+name: title-82trace-hotcore
+
+on:
+  push:
+    branches:
+      - 'optimize-title-82win-hotcore'
+    paths:
+      - '.github/workflows/title-82trace-hotcore.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  frozen-trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-82win-hotcore
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install dependencies and recover exact-equivalent C++ patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=optimize-title-82win-eval' > /tmp/title-eval-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/title-82-trace-bench.mjs?ref=optimize-title-82trace-dedup2' > /tmp/title-82-trace-bench.mjs
+      - name: Apply exact-equivalent C++ evaluation scan deduplication
+        run: |
+          node /tmp/title-eval-hotcore.mjs
+          sh scripts/build-wasm.sh
+      - name: Apply cumulative TypeScript duplicate-work elimination and winning route
+        run: |
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Verify optimized application and engine
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Recover canonical 82-move winning trace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --allow-escape-sequences repos/arunhistory/Shogi/actions/jobs/99261766337/logs > /tmp/title-82-winning.log
+          node --input-type=module <<'JS'
+          import {readFile,writeFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-82-winning.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.includes('SELFPLAY_RESULT:')&&value.includes('"result":"title-win"')&&value.includes('"plies":82'));
+          if(!line)throw new Error('CANONICAL_82_WIN_RESULT_NOT_FOUND');
+          const marker='SELFPLAY_RESULT:';
+          const result=JSON.parse(line.slice(line.indexOf(marker)+marker.length));
+          if(result.result!=='title-win'||result.plies!==82||result.titleSide!=='gote'||result.proSide!=='sente'||result.moveTrace?.length!==82)throw new Error('CANONICAL_82_WIN_INVALID');
+          await writeFile('/tmp/title-82-winning.json',JSON.stringify(result));
+          console.log(`CANONICAL_82_WIN:${JSON.stringify({plies:result.plies,titleJobs:result.titleJobs,titleMaxReplyMs:result.titleMaxReplyMs,traceMoves:result.moveTrace.length})}`);
+          JS
+      - name: Run frozen winning-trace benchmark
+        run: node /tmp/title-82-trace-bench.mjs /tmp/title-82-winning.json | tee /tmp/title-trace.log
+      - name: Evaluate frozen-trace reproduction
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-trace.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.startsWith('TITLE_TRACE_RESULT:'));
+          if(!line)throw new Error('TITLE_TRACE_RESULT_MISSING');
+          const result=JSON.parse(line.slice('TITLE_TRACE_RESULT:'.length));
+          console.log(`TITLE_HOTCORE_SUMMARY:${JSON.stringify({fullMatch:result.fullMatch,matchedTitleMoves:result.matchedTitleMoves,totalTitleMoves:result.totalTitleMoves,maxMs:result.maxMs,avgMs:result.avgMs,firstMismatch:result.firstMismatch})}`);
+          if(!result.fullMatch)process.exit(1);
+          JS
