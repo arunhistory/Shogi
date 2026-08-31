@@ -2,15 +2,6 @@ name: title-supercomputer-vs-pro
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'experiment/title-supercomputer-v1'
-    paths:
-      - '.github/workflows/title-supercomputer-vs-pro.yml'
-      - 'scripts/title-supercomputer-vs-pro.mjs'
-      - 'scripts/title-supercomputer-edge-bench.mjs'
-      - 'src/game/title-super-worker.ts'
-      - 'cpp/title_supercomputer.cpp'
 
 permissions:
   contents: read
@@ -60,9 +51,12 @@ jobs:
           npm audit --audit-level=high
           test -s public/wasm/title_supercomputer.wasm
       - name: Preflight three 5M Supabase specialists
-        run: node scripts/title-supercomputer-edge-bench.mjs | tee /tmp/super-edge-bench.log
+        run: |
+          set -o pipefail
+          node scripts/title-supercomputer-edge-bench.mjs | tee /tmp/super-edge-bench.log
       - name: Play one Pro-sente versus SuperTitle-gote game
         run: |
+          set -o pipefail
           node scripts/title-supercomputer-vs-pro.mjs | tee /tmp/super-match.log
       - name: Report result
         if: always()
