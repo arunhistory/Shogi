@@ -46,7 +46,7 @@ jobs:
             if(!serviceName)return new Response('missing function name',{status:400});
             const envVars=Object.entries(Deno.env.toObject());
             try{
-              const worker=await EdgeRuntime.userWorkers.create({servicePath:`/home/deno/functions/${serviceName}`,memoryLimitMb:256,workerTimeoutMs:360000,cpuTimeSoftLimitMs:300000,cpuTimeHardLimitMs:340000,noModuleCache:false,envVars});
+              const worker=await EdgeRuntime.userWorkers.create({servicePath:`/home/deno/functions/${serviceName}`,memoryLimitMb:256,workerTimeoutMs:900000,cpuTimeSoftLimitMs:780000,cpuTimeHardLimitMs:840000,noModuleCache:false,envVars});
               return await worker.fetch(req);
             }catch(e){return new Response(JSON.stringify({ok:false,error:String(e)}),{status:500,headers:{'content-type':'application/json'}});}
           });
@@ -112,9 +112,9 @@ jobs:
           docker pull supabase/edge-runtime:v1.74.0
           docker run -d --name supertitle-edge -p 9000:9000 \
             -e 'SUPABASE_PUBLISHABLE_KEYS={"default":"bench"}' \
-            -e EDGE_RUNTIME_WORKER_POOL_SIZE=21 \
+            -e EDGE_RUNTIME_WORKER_POOL_SIZE=32 \
             -v /tmp/title-edge/functions:/home/deno/functions:ro \
-            supabase/edge-runtime:v1.74.0 start --main-service /home/deno/functions/main --policy per_request --max-parallelism 21 --request-wait-timeout 360000
+            supabase/edge-runtime:v1.74.0 start --main-service /home/deno/functions/main --policy per_request --max-parallelism 32 --request-wait-timeout 900000
           for i in $(seq 1 80); do if docker logs supertitle-edge 2>&1 | grep -q 'supertitle match main started'; then exit 0; fi;sleep 0.25;done
           docker logs supertitle-edge
           exit 1
@@ -133,7 +133,7 @@ jobs:
         env:
           TITLE_URL: http://127.0.0.1:9000/title-supercomputer
           TITLE_KEY: bench
-          TITLE_TIMEOUT_MS: '360000'
+          TITLE_TIMEOUT_MS: '900000'
           MATCH_MAX_PLIES: '200'
         run: |
           set -euo pipefail
