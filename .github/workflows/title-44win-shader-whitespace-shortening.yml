@@ -1,0 +1,86 @@
+name: title-44win-shader-whitespace-shortening
+
+on:
+  push:
+    branches:
+      - 'optimize-title-44win-source-shortening'
+    paths:
+      - '.github/workflows/title-44win-shader-whitespace-shortening.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-44win-source-shortening
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Reconstruct exact 44-ply winner with proven name shortening
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=4263b01cfd40dfdb95f26b11f5f556757941dc90' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-incremental-history-hash-v2.mjs?ref=2d15c41db5f7203739a3ebb5ada7873487923545' > /tmp/title-historyhash.mjs
+          node /tmp/title-hotcore.mjs
+          node /tmp/title-historyhash.mjs
+          sh scripts/build-wasm.sh
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          node scripts/temp-patch-title-internal-names-short.mjs
+          npm test
+          npm run build
+          cp $(find dist/assets -maxdepth 1 -name 'cpu-worker-*.js' -print -quit) /tmp/cpu-worker-before.js
+          wc -c /tmp/cpu-worker-before.js
+      - name: Remove shader indentation and blank lines only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/game/title-gpu-forecast.ts')
+          s=p.read_text()
+          start=s.index('const shader=`')+len('const shader=`')
+          end=s.index('`;',start)
+          shader=s[start:end]
+          lines=shader.splitlines()
+          shortened='\n'.join(line.strip() for line in lines if line.strip())
+          if shader.startswith('\n'): shortened='\n'+shortened
+          if shader.endswith('\n'): shortened+='\n'
+          # Prove that only whitespace was removed.
+          if ''.join(shader.split())!=''.join(shortened.split()):
+            raise SystemExit('NON_WHITESPACE_SHADER_CHANGE')
+          out=s[:start]+shortened+s[end:]
+          p.write_text(out)
+          print('SHADER_BYTES_BEFORE',len(shader.encode()))
+          print('SHADER_BYTES_AFTER',len(shortened.encode()))
+          print('SHADER_BYTES_SAVED',len(shader.encode())-len(shortened.encode()))
+          print('NON_WHITESPACE_SHADER_IDENTICAL:true')
+          PY
+      - name: Verify and measure production worker
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+          after=$(find dist/assets -maxdepth 1 -name 'cpu-worker-*.js' -print -quit)
+          cp "$after" /tmp/cpu-worker-after.js
+          node --check /tmp/cpu-worker-after.js
+          before_bytes=$(wc -c < /tmp/cpu-worker-before.js)
+          after_bytes=$(wc -c < /tmp/cpu-worker-after.js)
+          echo "WORKER_JS_BEFORE_BYTES:$before_bytes"
+          echo "WORKER_JS_AFTER_BYTES:$after_bytes"
+          echo "WORKER_JS_BYTES_SAVED:$((before_bytes-after_bytes))"
+          test "$after_bytes" -lt "$before_bytes"
