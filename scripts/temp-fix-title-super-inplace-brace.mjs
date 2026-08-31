@@ -1,0 +1,11 @@
+import {readFile,writeFile} from 'node:fs/promises';
+const file=process.argv[2]??'/tmp/title_supercomputer_inplace.cpp';
+let source=await readFile(file,'utf8');
+const bad='}\n}\n\n}\n\nextern "C" {';
+const good='}\n}\n\nextern "C" {';
+const first=source.indexOf(bad);
+if(first<0)throw new Error('INPLACE_DUPLICATE_BRACE_PATTERN_MISSING');
+if(source.indexOf(bad,first+1)>=0)throw new Error('INPLACE_DUPLICATE_BRACE_PATTERN_MULTIPLE');
+source=source.replace(bad,good);
+await writeFile(file,source);
+console.log(JSON.stringify({ok:true,file,bytes:source.length}));
