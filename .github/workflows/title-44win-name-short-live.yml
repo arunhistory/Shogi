@@ -1,0 +1,68 @@
+name: title-44win-name-short-live
+
+on:
+  push:
+    branches:
+      - 'optimize-title-44win-source-shortening'
+    paths:
+      - '.github/workflows/title-44win-name-short-live.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1,2,3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-44win-source-shortening
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Reconstruct exact 44-ply winner and shorten names only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=4263b01cfd40dfdb95f26b11f5f556757941dc90' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-incremental-history-hash-v2.mjs?ref=2d15c41db5f7203739a3ebb5ada7873487923545' > /tmp/title-historyhash.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/title-pro-acceptance-one.mjs?ref=e17a96401d1b6e3e29b310bae024a162a6306de1' > /tmp/title-pro-acceptance-one.mjs
+          node /tmp/title-hotcore.mjs
+          node /tmp/title-historyhash.mjs
+          sh scripts/build-wasm.sh
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          node scripts/temp-patch-title-internal-names-short.mjs
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Run isolated Pro-sente versus Title-gote
+        run: |
+          node /tmp/title-pro-acceptance-one.mjs '${{ matrix.trial }}' 'name-short' | tee /tmp/title-acceptance.log
+      - name: Check fixed acceptance
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-acceptance.log','utf8');
+          const line=text.split(/\r?\n/).find(v=>v.startsWith('TITLE_ACCEPTANCE_RESULT:'));
+          if(!line)throw new Error('RESULT_MISSING');
+          const r=JSON.parse(line.slice('TITLE_ACCEPTANCE_RESULT:'.length));
+          const pass=r.result==='title-win'&&r.plies<=82&&r.titleAvgReplyMs<2600;
+          console.log(`NAME_SHORT_LIVE:${JSON.stringify({trial:r.trial,result:r.result,plies:r.plies,titleAvgReplyMs:r.titleAvgReplyMs,titleMaxReplyMs:r.titleMaxReplyMs,titleNodes:r.titleNodes,titleJobs:r.titleJobs,pass})}`);
+          if(!pass)process.exit(1);
+          JS
