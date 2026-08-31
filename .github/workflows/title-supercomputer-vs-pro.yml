@@ -1,6 +1,7 @@
 name: title-supercomputer-vs-pro
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - 'experiment/title-supercomputer-v1'
