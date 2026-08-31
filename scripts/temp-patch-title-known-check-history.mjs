@@ -56,10 +56,10 @@ replaceOnce(
       return parallel_evaluate_for(pos, pos.turn);
     }
     const int score = -parallel_quiescence(next, -beta, -alpha, ply + 1, qdepth + 1);`,
-`    const bool gave_check = g_parallel_profile >= 4 && ordered_check_count >= 0
-      ? i < ordered_check_count
-      : is_check(next, next.turn);
-    if (!push_parallel_search_history_known(next, pos.turn, gave_check)) {
+`    const bool history_pushed = g_parallel_profile >= 4 && ordered_check_count >= 0
+      ? push_parallel_search_history_known(next, pos.turn, i < ordered_check_count)
+      : push_parallel_search_history(next, pos.turn);
+    if (!history_pushed) {
       g_parallel_complete = false;
       return parallel_evaluate_for(pos, pos.turn);
     }
@@ -85,10 +85,10 @@ replaceOnce(
       return parallel_evaluate_for(pos, pos.turn);
     }
     const int score = -parallel_negamax(next, depth - 1, -beta, -alpha, ply + 1);`,
-`    const bool gave_check = g_parallel_profile >= 4 && ordered_check_count >= 0
-      ? i < ordered_check_count
-      : is_check(next, next.turn);
-    if (!push_parallel_search_history_known(next, pos.turn, gave_check)) {
+`    const bool history_pushed = g_parallel_profile >= 4 && ordered_check_count >= 0
+      ? push_parallel_search_history_known(next, pos.turn, i < ordered_check_count)
+      : push_parallel_search_history(next, pos.turn);
+    if (!history_pushed) {
       g_parallel_complete = false;
       return parallel_evaluate_for(pos, pos.turn);
     }
