@@ -1,0 +1,74 @@
+name: title-supercomputer-edge-20-benchmark
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - '.github/workflows/title-supercomputer-edge-20-benchmark.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run 20 simultaneous 5M specialists and convergence
+        shell: bash
+        run: |
+          node <<'NODE'
+          const url='https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer';
+          const key='sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF';
+          const positionWords=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+          if(positionWords.length!==97)throw new Error(`POSITION_WORDS:${positionWords.length}`);
+
+          const batchEpoch=performance.now();
+          async function specialist(id){
+            const controller=new AbortController();
+            const timer=setTimeout(()=>controller.abort(),45000);
+            const started=performance.now();
+            try{
+              const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':key},body:JSON.stringify({action:'specialist',specialist:id,positionWords}),signal:controller.signal});
+              const text=await response.text();
+              const ended=performance.now();
+              let data=null;try{data=JSON.parse(text);}catch{}
+              if(!response.ok||!data?.ok)throw new Error(`SPECIALIST_${id}_HTTP_${response.status}:${String(data?.error??text.slice(0,160))}`);
+              const result=data.result;
+              if(Number(result?.nodes)!==5_000_000)throw new Error(`SPECIALIST_${id}_NODE_MISMATCH:${String(result?.nodes)}`);
+              return{id,status:response.status,startedOffsetMs:started-batchEpoch,endedOffsetMs:ended-batchEpoch,wallMs:ended-started,internalMs:Number(result.elapsedMs),nodes:Number(result.nodes),moveCode:Number(result.moveCode),score:Number(result.score),label:String(result.label??'')};
+            }finally{clearTimeout(timer);}
+          }
+
+          const ids=Array.from({length:20},(_,i)=>i+1);
+          const settled=await Promise.allSettled(ids.map(specialist));
+          const batchEnded=performance.now();
+          const failures=settled.flatMap((x,i)=>x.status==='rejected'?[{id:ids[i],error:String(x.reason?.stack??x.reason)}]:[]);
+          const results=settled.flatMap(x=>x.status==='fulfilled'?[x.value]:[]).sort((a,b)=>a.id-b.id);
+          const specialistBatchWallMs=batchEnded-batchEpoch;
+          const sumSpecialistWallMs=results.reduce((s,x)=>s+x.wallMs,0);
+          const maxSpecialistWallMs=results.length?Math.max(...results.map(x=>x.wallMs)):null;
+          const maxInternalMs=results.length?Math.max(...results.map(x=>x.internalMs)):null;
+          const startSpreadMs=results.length?Math.max(...results.map(x=>x.startedOffsetMs))-Math.min(...results.map(x=>x.startedOffsetMs)):null;
+          const overlapFactor=results.length&&specialistBatchWallMs>0?sumSpecialistWallMs/specialistBatchWallMs:null;
+          console.log('EDGE_20_SPECIALISTS:'+JSON.stringify({ok:failures.length===0&&results.length===20,count:results.length,failures,specialistBatchWallMs,sumSpecialistWallMs,maxSpecialistWallMs,maxInternalMs,startSpreadMs,overlapFactor,results}));
+          if(failures.length||results.length!==20)process.exit(1);
+
+          const candidates=results.map(x=>x.moveCode);
+          const convergenceStarted=performance.now();
+          const controller=new AbortController();
+          const timer=setTimeout(()=>controller.abort(),45000);
+          let response,text,data;
+          try{
+            response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':key},body:JSON.stringify({action:'converge',positionWords,candidates}),signal:controller.signal});
+            text=await response.text();
+            try{data=JSON.parse(text);}catch{data=null;}
+          }finally{clearTimeout(timer);}
+          const convergenceEnded=performance.now();
+          if(!response.ok||!data?.ok)throw new Error(`CONVERGENCE_HTTP_${response.status}:${String(data?.error??text.slice(0,160))}`);
+          if(Number(data.result?.nodes)!==5_000_000)throw new Error(`CONVERGENCE_NODE_MISMATCH:${String(data.result?.nodes)}`);
+          const convergenceWallMs=convergenceEnded-convergenceStarted;
+          const totalPipelineWallMs=convergenceEnded-batchEpoch;
+          console.log('EDGE_20_PIPELINE:'+JSON.stringify({ok:true,specialistCount:20,specialistNodes:results.reduce((s,x)=>s+x.nodes,0),convergenceNodes:Number(data.result.nodes),totalNodes:results.reduce((s,x)=>s+x.nodes,0)+Number(data.result.nodes),specialistBatchWallMs,convergenceWallMs,convergenceInternalMs:Number(data.result.elapsedMs),totalPipelineWallMs,finalMoveCode:Number(data.result.moveCode),finalScore:Number(data.result.score),inputSpecialists:Number(data.result.inputSpecialists),overlapFactor}));
+          NODE
