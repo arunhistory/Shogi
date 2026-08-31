@@ -1,0 +1,68 @@
+name: title-supercomputer-vs-pro
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - '.github/workflows/title-supercomputer-vs-pro.yml'
+      - 'scripts/title-supercomputer-vs-pro.mjs'
+      - 'src/game/title-super-worker.ts'
+      - 'cpp/title_supercomputer.cpp'
+
+permissions:
+  contents: read
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten binaryen wabt
+      - name: Build engines
+        run: |
+          npm ci
+          sh scripts/build-wasm.sh
+          em++ cpp/title_supercomputer.cpp \
+            -O3 -std=c++17 -include initializer_list \
+            -s WASM=1 -s STANDALONE_WASM=1 --no-entry \
+            -Wl,--export=shogi_input_buffer \
+            -Wl,--export=shogi_input_capacity \
+            -Wl,--export=shogi_legal_move_count \
+            -Wl,--export=shogi_legal_move_at \
+            -Wl,--export=shogi_is_check \
+            -Wl,--export=shogi_is_mate \
+            -Wl,--export=shogi_super_search_specialist \
+            -Wl,--export=shogi_super_converge \
+            -Wl,--export=shogi_super_best_score \
+            -Wl,--export=shogi_super_nodes_searched \
+            -o public/wasm/title_supercomputer.wasm
+          wasm-opt -O4 public/wasm/title_supercomputer.wasm -o /tmp/title_supercomputer.wasm
+          mv /tmp/title_supercomputer.wasm public/wasm/title_supercomputer.wasm
+          wasm-validate public/wasm/title_supercomputer.wasm
+      - name: Verify application and WASM
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+          test -s public/wasm/title_supercomputer.wasm
+      - name: Play one Pro-sente versus SuperTitle-gote game
+        run: |
+          node scripts/title-supercomputer-vs-pro.mjs | tee /tmp/super-match.log
+      - name: Report result
+        if: always()
+        run: |
+          if test -f /tmp/super-match.log; then
+            grep 'SUPER_MATCH_RESULT:' /tmp/super-match.log || true
+          fi
