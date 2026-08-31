@@ -1,0 +1,127 @@
+name: title-multi-entry-one-exit-live
+
+on:
+  push:
+    branches:
+      - 'experiment/title-multi-entry-one-exit'
+    paths:
+      - '.github/workflows/title-multi-entry-one-exit-live.yml'
+      - 'scripts/temp-patch-title-multi-entry-one-exit.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  paired-live:
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1,2,3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-multi-entry-one-exit
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Reconstruct exact canonical 44-ply winner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=4263b01cfd40dfdb95f26b11f5f556757941dc90' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-incremental-history-hash-v2.mjs?ref=2d15c41db5f7203739a3ebb5ada7873487923545' > /tmp/title-historyhash.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/title-pro-acceptance-one.mjs?ref=e17a96401d1b6e3e29b310bae024a162a6306de1' > /tmp/title-pro-acceptance-one.mjs
+          node /tmp/title-hotcore.mjs
+          node /tmp/title-historyhash.mjs
+          sh scripts/build-wasm.sh
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+          sha256sum public/wasm/shogi_engine.wasm | tee /tmp/wasm-before.sha
+          sha256sum src/game/cpu.ts | tee /tmp/cpu-before.sha
+      - name: Run paired baseline
+        run: |
+          node /tmp/title-pro-acceptance-one.mjs '${{ matrix.trial }}' 'canonical-paired-baseline' | tee /tmp/title-baseline.log
+      - name: Apply N-entry one-exit architecture
+        run: |
+          node scripts/temp-patch-title-multi-entry-one-exit.mjs
+          git diff --check
+          sha256sum public/wasm/shogi_engine.wasm | tee /tmp/wasm-after-patch.sha
+          sha256sum src/game/cpu.ts | tee /tmp/cpu-after-patch.sha
+          cmp /tmp/wasm-before.sha /tmp/wasm-after-patch.sha
+          cmp /tmp/cpu-before.sha /tmp/cpu-after-patch.sha
+      - name: Expose phase telemetry to acceptance trace
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile,writeFile} from 'node:fs/promises';
+          const path='/tmp/title-pro-acceptance-one.mjs';
+          let source=await readFile(path,'utf8');
+          const oldText=`          completedDepth:Number(r.completedDepth??0),`;
+          const newText=`          completedDepth:Number(r.completedDepth??0),
+          titleEntryCount:Number(r.titleEntryCount??0),
+          titleEntryJobsCompleted:Number(r.titleEntryJobsCompleted??0),
+          titleEntryPhaseMs:Number(r.titleEntryPhaseMs??0),
+          titleConvergenceMs:Number(r.titleConvergenceMs??0),`;
+          if(!source.includes(oldText))throw new Error('ACCEPTANCE_TELEMETRY_ANCHOR_NOT_FOUND');
+          source=source.replace(oldText,newText);
+          await writeFile(path,source);
+          JS
+      - name: Verify experimental build
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Run multi-entry one-exit Title
+        run: |
+          node /tmp/title-pro-acceptance-one.mjs '${{ matrix.trial }}' 'multi-entry-one-exit' | tee /tmp/title-multi-entry.log
+      - name: Compare paired results
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const parse=async path=>{
+            const text=await readFile(path,'utf8');
+            const line=text.split(/\r?\n/).find(v=>v.startsWith('TITLE_ACCEPTANCE_RESULT:'));
+            if(!line)throw new Error('RESULT_MISSING:'+path);
+            return JSON.parse(line.slice('TITLE_ACCEPTANCE_RESULT:'.length));
+          };
+          const baseline=await parse('/tmp/title-baseline.log');
+          const multi=await parse('/tmp/title-multi-entry.log');
+          const titleMoves=multi.moveTrace.filter(move=>move.level==='title');
+          if(!titleMoves.length)throw new Error('NO_TITLE_MOVES');
+          if(!titleMoves.some(move=>move.titleEntryCount>0))throw new Error('MULTI_ENTRY_NOT_ACTIVE');
+          const avg=(key)=>titleMoves.reduce((sum,move)=>sum+Number(move[key]??0),0)/titleMoves.length;
+          const compare={
+            trial:${{ matrix.trial }},
+            baseline:{
+              result:baseline.result,plies:baseline.plies,titleAvgReplyMs:baseline.titleAvgReplyMs,
+              titleMaxReplyMs:baseline.titleMaxReplyMs,titleNodes:baseline.titleNodes,titleJobs:baseline.titleJobs,
+            },
+            multi:{
+              result:multi.result,plies:multi.plies,titleAvgReplyMs:multi.titleAvgReplyMs,
+              titleMaxReplyMs:multi.titleMaxReplyMs,titleNodes:multi.titleNodes,titleJobs:multi.titleJobs,
+              avgEntryCount:avg('titleEntryCount'),
+              avgEntryJobsCompleted:avg('titleEntryJobsCompleted'),
+              avgEntryPhaseMs:avg('titleEntryPhaseMs'),
+              avgConvergenceMs:avg('titleConvergenceMs'),
+            },
+            deltaAvgReplyMs:multi.titleAvgReplyMs-baseline.titleAvgReplyMs,
+            nodeRatio:baseline.titleNodes?multi.titleNodes/baseline.titleNodes:null,
+            jobRatio:baseline.titleJobs?multi.titleJobs/baseline.titleJobs:null,
+          };
+          console.log('TITLE_MULTI_ENTRY_COMPARE:'+JSON.stringify(compare));
+          JS
