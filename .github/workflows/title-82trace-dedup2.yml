@@ -47,7 +47,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/arunhistory/Shogi/actions/jobs/99261766337/logs > /tmp/title-82-winning.log
+          gh api --allow-escape-sequences repos/arunhistory/Shogi/actions/jobs/99261766337/logs > /tmp/title-82-winning.log
           node --input-type=module <<'JS'
           import {readFile,writeFile} from 'node:fs/promises';
           const text=await readFile('/tmp/title-82-winning.log','utf8');
