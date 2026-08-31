@@ -9,6 +9,7 @@ on:
       - 'scripts/temp-patch-title-super-fastpath.mjs'
       - 'scripts/temp-patch-title-super-metrics.mjs'
       - 'scripts/temp-patch-title-super-inplace.mjs'
+      - 'scripts/temp-patch-title-super-state-cache.mjs'
       - 'scripts/test-title-super-inplace.mjs'
       - 'scripts/title-supercomputer-local-bench.mjs'
       - '.github/workflows/title-supercomputer-build.yml'
@@ -34,7 +35,20 @@ jobs:
         run: node scripts/temp-patch-title-super-metrics.mjs /tmp/title_supercomputer_fast.cpp /tmp/title_supercomputer_metrics.cpp
       - name: Replace child copies with make-unmake
         run: node scripts/temp-patch-title-super-inplace.mjs /tmp/title_supercomputer_metrics.cpp /tmp/title_supercomputer_inplace.cpp
-      - name: Build metrics and inplace WASM variants
+      - name: Add incremental search state cache candidate
+        run: |
+          node scripts/temp-patch-title-super-state-cache.mjs /tmp/title_supercomputer_inplace.cpp /tmp/title_supercomputer_cached.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path('/tmp/title_supercomputer_cached.cpp')
+          text=path.read_text()
+          anchor='struct SuperUndo{'
+          decl='int super_base_eval(const Position&pos,int perspective);\ninline void super_mark(uint8_t*map,int y,int x);\nvoid super_slide_map(const Position&pos,uint8_t*map,int y,int x,int dy,int dx);\n'
+          if anchor not in text:
+              raise SystemExit('CACHE_FORWARD_DECL_ANCHOR_MISSING')
+          path.write_text(text.replace(anchor,decl+anchor,1))
+          PY
+      - name: Build metrics inplace and cached WASM variants
         run: |
           mkdir -p public/wasm
           COMMON_FLAGS=(
@@ -55,13 +69,16 @@ jobs:
           wasm-opt -O4 /tmp/title_supercomputer_metrics_raw.wasm -o /tmp/title_supercomputer_metrics.wasm
           em++ /tmp/title_supercomputer_inplace.cpp "${COMMON_FLAGS[@]}" -Wl,--export=shogi_super_inplace_selftest -o /tmp/title_supercomputer_inplace_raw.wasm
           wasm-opt -O4 /tmp/title_supercomputer_inplace_raw.wasm -o public/wasm/title_supercomputer.wasm
+          em++ /tmp/title_supercomputer_cached.cpp "${COMMON_FLAGS[@]}" -Wl,--export=shogi_super_inplace_selftest -o /tmp/title_supercomputer_cached_raw.wasm
+          wasm-opt -O4 /tmp/title_supercomputer_cached_raw.wasm -o /tmp/title_supercomputer_cached.wasm
           wasm-validate /tmp/title_supercomputer_metrics.wasm
           wasm-validate public/wasm/title_supercomputer.wasm
-          ls -lh /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm
-          sha256sum /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm
+          wasm-validate /tmp/title_supercomputer_cached.wasm
+          ls -lh /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
+          sha256sum /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
       - name: Compare exact 5M search performance
-        run: node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm
-      - name: Verify required exports and state roundtrip
+        run: node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
+      - name: Verify current required exports and state roundtrip
         run: |
           wasm-objdump -x public/wasm/title_supercomputer.wasm | tee /tmp/exports.txt
           grep -q 'shogi_super_search_specialist' /tmp/exports.txt
@@ -69,7 +86,7 @@ jobs:
           grep -q 'shogi_input_buffer' /tmp/exports.txt
           grep -q 'shogi_super_inplace_selftest' /tmp/exports.txt
           node scripts/test-title-super-inplace.mjs
-      - name: Commit generated WASM to experiment branch
+      - name: Commit current generated WASM to experiment branch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
