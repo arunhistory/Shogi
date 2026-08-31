@@ -1,0 +1,122 @@
+name: title-44win-dualhash
+
+on:
+  push:
+    branches:
+      - 'optimize-title-44win-dualhash'
+    paths:
+      - '.github/workflows/title-44win-dualhash.yml'
+      - 'scripts/temp-patch-title-dual-history-key.mjs'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  exact-equivalence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-44win-dualhash
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install dependencies and fetch proven helpers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=optimize-title-82win-eval' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-title-parallel-equivalence.mjs?ref=optimize-title-82win-eval' > /tmp/title-equivalence.mjs
+      - name: Build accumulated exact baseline
+        run: |
+          node /tmp/title-hotcore.mjs
+          node scripts/temp-patch-title-incremental-history-hash-v2.mjs
+          node scripts/temp-patch-title-qdedup-lanekey.mjs
+          node scripts/temp-patch-title-historykey-reuse.mjs
+          sh scripts/build-wasm.sh
+          cp public/wasm/shogi_engine.wasm /tmp/title-before-dualhash.wasm
+          node /tmp/title-equivalence.mjs /tmp/title-before-dualhash.wasm /tmp/title-before-dualhash.json
+      - name: Apply one-pass dual HistoryKey computation
+        run: node scripts/temp-patch-title-dual-history-key.mjs
+      - name: Build optimized core and require exact search semantics
+        run: |
+          sh scripts/build-wasm.sh
+          node /tmp/title-equivalence.mjs public/wasm/shogi_engine.wasm /tmp/title-after-dualhash.json
+          diff -u /tmp/title-before-dualhash.json /tmp/title-after-dualhash.json
+          echo 'TITLE_DUALHASH_EQUIVALENCE:PASS'
+      - name: Apply unchanged stable TypeScript Title path
+        run: |
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Verify application
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+
+  live-match:
+    needs: exact-equivalence
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-44win-dualhash
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install dependencies and fetch acceptance harness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=optimize-title-82win-eval' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/title-pro-acceptance-one.mjs?ref=optimize-title-pressure-order' > /tmp/title-pro-acceptance-one.mjs
+      - name: Build accumulated same-logic optimized Title
+        run: |
+          node /tmp/title-hotcore.mjs
+          node scripts/temp-patch-title-incremental-history-hash-v2.mjs
+          node scripts/temp-patch-title-qdedup-lanekey.mjs
+          node scripts/temp-patch-title-historykey-reuse.mjs
+          node scripts/temp-patch-title-dual-history-key.mjs
+          sh scripts/build-wasm.sh
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          npm run build
+      - name: Run isolated Pro-sente versus Title-gote match
+        run: node /tmp/title-pro-acceptance-one.mjs '${{ matrix.trial }}' 'dualhash' | tee /tmp/title-acceptance.log
+      - name: Evaluate fixed acceptance criteria
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-acceptance.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.startsWith('TITLE_ACCEPTANCE_RESULT:'));
+          if(!line)throw new Error('TITLE_ACCEPTANCE_RESULT_MISSING');
+          const result=JSON.parse(line.slice('TITLE_ACCEPTANCE_RESULT:'.length));
+          console.log(`TITLE_DUALHASH_ACCEPTANCE:${JSON.stringify({trial:result.trial,result:result.result,plies:result.plies,titleAvgReplyMs:result.titleAvgReplyMs,titleMaxReplyMs:result.titleMaxReplyMs,speedImproved:result.speedImproved,pass82:result.pass82,goal30:result.goal30,titleNodes:result.titleNodes,titleJobs:result.titleJobs})}`);
+          if(!result.pass82)process.exit(1);
+          JS
