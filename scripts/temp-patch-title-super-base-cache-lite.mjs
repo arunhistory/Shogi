@@ -20,8 +20,8 @@ source=source.replace(makeHead,makeHead+`  undo.oldBase=g_super_base_cache;\n  i
 const unmakeHead='inline void super_unmake_move(Position&pos,const Move&move,const SuperUndo&undo){\n  const int side=undo.oldTurn;pos.turn=undo.oldTurn;\n';
 assert(source.includes(unmakeHead),'BASE_CACHE_UNMAKE_HEAD_MISSING');
 source=source.replace(unmakeHead,unmakeHead+'  if(g_super_base_cache_ready)g_super_base_cache=undo.oldBase;\n');
-const eval='  const int enemy=-perspective,base=super_base_eval(pos,perspective);\n';
-assert(source.includes(eval),'BASE_CACHE_EVAL_MISSING');source=source.replace(eval,'  const int enemy=-perspective,base=g_super_base_cache;\n');
+const evalAnchor='  const int enemy=-perspective,base=super_base_eval(pos,perspective);\n';
+assert(source.includes(evalAnchor),'BASE_CACHE_EVAL_MISSING');source=source.replace(evalAnchor,'  const int enemy=-perspective,base=g_super_base_cache;\n');
 const search='int32_t super_search(const Position&root,int specialist,int maxDepth,int nodeLimit,const int32_t*restrictMoves,int restrictCount){\n  MoveList all;super_generate_legal(root,all);if(all.count==0)return-1;\n';
 assert(source.includes(search),'BASE_CACHE_SEARCH_MISSING');source=source.replace(search,'int32_t super_search(const Position&root,int specialist,int maxDepth,int nodeLimit,const int32_t*restrictMoves,int restrictCount){\n  super_base_cache_reset(root,root.turn);MoveList all;super_generate_legal(root,all);if(all.count==0)return-1;\n');
 const self='int32_t shogi_super_inplace_selftest(int32_t count){Position pos;if(!load_position(count,pos))return-1;MoveList moves;super_generate_legal(pos,moves);';
