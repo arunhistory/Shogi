@@ -1,0 +1,67 @@
+name: title-supercomputer-base-cache-lite-benchmark
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - 'scripts/temp-patch-title-super-base-cache-lite.mjs'
+      - 'scripts/title-supercomputer-converge-compare-exact.mjs'
+      - '.github/workflows/title-supercomputer-base-cache-lite-benchmark.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+      - name: Install Emscripten toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+      - name: Reconstruct baseline and exact candidates
+        run: |
+          node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
+          node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-baseline.cpp
+          node scripts/temp-patch-title-super-base-cache-lite.mjs /tmp/super-baseline.cpp /tmp/super-base.cpp
+          node scripts/temp-patch-title-super-drop-fast.mjs /tmp/super-baseline.cpp /tmp/super-drop.cpp
+          node scripts/temp-patch-title-super-drop-fast.mjs /tmp/super-base.cpp /tmp/super-base-drop.cpp
+      - name: Build all variants identically
+        run: |
+          FLAGS=(
+            -Icpp -O3 -std=c++17 -include initializer_list
+            -s WASM=1 -s STANDALONE_WASM=1 --no-entry
+            -Wl,--export=shogi_input_buffer
+            -Wl,--export=shogi_input_capacity
+            -Wl,--export=shogi_legal_move_count
+            -Wl,--export=shogi_legal_move_at
+            -Wl,--export=shogi_is_check
+            -Wl,--export=shogi_is_mate
+            -Wl,--export=shogi_super_search_specialist
+            -Wl,--export=shogi_super_converge
+            -Wl,--export=shogi_super_best_score
+            -Wl,--export=shogi_super_nodes_searched
+            -Wl,--export=shogi_super_inplace_selftest
+          )
+          for v in baseline base drop base-drop; do
+            src=/tmp/super-${v}.cpp
+            em++ "$src" "${FLAGS[@]}" -o "/tmp/${v}.raw.wasm"
+            wasm-opt -O4 "/tmp/${v}.raw.wasm" -o "/tmp/${v}.wasm"
+            wasm-validate "/tmp/${v}.wasm"
+          done
+          sha256sum /tmp/baseline.wasm /tmp/base.wasm /tmp/drop.wasm /tmp/base-drop.wasm
+          stat -c '%n %s' /tmp/baseline.wasm /tmp/base.wasm /tmp/drop.wasm /tmp/base-drop.wasm
+      - name: Compare exact specialist behavior and speed
+        run: |
+          for s in 1 10 19 20; do
+            echo "=== specialist $s ==="
+            TITLE_SUPER_SPECIALIST=$s node scripts/title-supercomputer-compare-exact.mjs /tmp/baseline.wasm /tmp/base.wasm /tmp/drop.wasm /tmp/base-drop.wasm
+          done
+      - name: Compare exact 20-candidate convergence
+        run: node scripts/title-supercomputer-converge-compare-exact.mjs /tmp/baseline.wasm /tmp/base.wasm /tmp/base-drop.wasm
