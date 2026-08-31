@@ -1,0 +1,13 @@
+import {readFile} from 'node:fs/promises';
+const words=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+if(words.length!==97)throw new Error(`POSITION_WORDS:${words.length}`);
+const bytes=await readFile('public/wasm/title_supercomputer.wasm');
+const {instance}=await WebAssembly.instantiate(bytes,{});
+const e=instance.exports;
+for(const name of ['memory','shogi_input_buffer','shogi_input_capacity','shogi_legal_move_count','shogi_legal_move_at','shogi_super_search_specialist','shogi_super_inplace_selftest'])if(!(name in e))throw new Error(`MISSING_EXPORT:${name}`);
+const input=new Int32Array(e.memory.buffer,e.shogi_input_buffer(),e.shogi_input_capacity());input.fill(0);input.set(words);
+const selftest=Number(e.shogi_super_inplace_selftest(97));if(selftest!==30)throw new Error(`INPLACE_SELFTEST:${selftest}`);
+const legalCount=Number(e.shogi_legal_move_count(97));if(legalCount!==30)throw new Error(`LEGAL_COUNT:${legalCount}`);
+const legal=new Set(Array.from({length:legalCount},(_,i)=>Number(e.shogi_legal_move_at(i))));
+const move=Number(e.shogi_super_search_specialist(97,1,2,50000));if(!legal.has(move))throw new Error(`SEARCH_RETURNED_ILLEGAL:${move}`);
+console.log(JSON.stringify({ok:true,selftest,legalCount,searchMove:move,nodes:Number(e.shogi_super_nodes_searched())}));
