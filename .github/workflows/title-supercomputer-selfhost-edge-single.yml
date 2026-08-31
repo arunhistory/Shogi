@@ -21,6 +21,9 @@ jobs:
           set -euo pipefail
           ROOT=/tmp/title-edge/functions
           mkdir -p "$ROOT/main" "$ROOT/title-supercomputer"
+          cat > /tmp/title-edge/position.json <<'JSON'
+          [1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+          JSON
 
           cat > "$ROOT/main/index.ts" <<'TS'
           console.log('supertitle selfhost main started');
@@ -75,6 +78,7 @@ jobs:
             printf "import {runWasmSpecialist} from './convergence.ts';export const run=(p:unknown,b:number)=>runWasmSpecialist(p,b,%d,'%s');\n" "$i" "$label" > "$ROOT/title-supercomputer/specialist-${n}.ts"
           done
           test "$(find "$ROOT/title-supercomputer" -maxdepth 1 -type f | wc -l)" -eq 22
+          node -e "const p=JSON.parse(require('fs').readFileSync('/tmp/title-edge/position.json','utf8'));if(p.length!==97)throw new Error('POSITION_WORD_COUNT:'+p.length);console.log('SELFHOST_POSITION_WORDS:'+p.length)"
           echo "SELFHOST_FUNCTION_FILE_COUNT:$(find "$ROOT/title-supercomputer" -maxdepth 1 -type f | wc -l)"
 
       - name: Start self-hosted Supabase Edge Runtime with expanded CPU limit
@@ -99,8 +103,9 @@ jobs:
         shell: bash
         run: |
           node <<'NODE'
+          import {readFile} from 'node:fs/promises';
           const url='http://127.0.0.1:9000/title-supercomputer';
-          const positionWords=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+          const positionWords=JSON.parse(await readFile('/tmp/title-edge/position.json','utf8'));
           if(positionWords.length!==97)throw new Error(`POSITION_WORD_COUNT:${positionWords.length}`);
           const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);const started=performance.now();
           let response,text;try{response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':'bench'},body:JSON.stringify({action:'specialist',specialist:1,positionWords}),signal:controller.signal});text=await response.text();}finally{clearTimeout(timer);}
@@ -111,8 +116,10 @@ jobs:
         shell: bash
         run: |
           node <<'NODE'
+          import {readFile} from 'node:fs/promises';
           const url='http://127.0.0.1:9000/title-supercomputer';
-          const positionWords=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+          const positionWords=JSON.parse(await readFile('/tmp/title-edge/position.json','utf8'));
+          if(positionWords.length!==97)throw new Error(`POSITION_WORD_COUNT:${positionWords.length}`);
           const batchStart=performance.now();
           async function run(id){
             const started=performance.now();const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);
