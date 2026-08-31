@@ -101,7 +101,7 @@ const search=`int32_t super_search(const Position&root,int specialist,int maxDep
   g_super_best_move=bestMove;g_super_best_score=bestScore;return bestMove;
 }
 `;
-replaceRange('int32_t super_search(','}\n\nextern "C" {',search+'}\n\n','INPLACE_SEARCH');
+replaceRange('int32_t super_search(','}\n\nextern "C" {',search,'INPLACE_SEARCH');
 
 const externAnchor='extern "C" {\n';
 assert(source.includes(externAnchor),'INPLACE_EXTERN_MISSING');
