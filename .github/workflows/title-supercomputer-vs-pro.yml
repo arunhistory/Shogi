@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/title-supercomputer-vs-pro.yml'
       - 'scripts/title-supercomputer-vs-pro.mjs'
+      - 'scripts/title-supercomputer-edge-bench.mjs'
       - 'src/game/title-super-worker.ts'
       - 'cpp/title_supercomputer.cpp'
 
@@ -57,12 +58,17 @@ jobs:
           node scripts/test-wasm.mjs
           npm audit --audit-level=high
           test -s public/wasm/title_supercomputer.wasm
+      - name: Preflight three 5M Supabase specialists
+        run: node scripts/title-supercomputer-edge-bench.mjs | tee /tmp/super-edge-bench.log
       - name: Play one Pro-sente versus SuperTitle-gote game
         run: |
           node scripts/title-supercomputer-vs-pro.mjs | tee /tmp/super-match.log
       - name: Report result
         if: always()
         run: |
+          if test -f /tmp/super-edge-bench.log; then
+            grep 'EDGE_BENCH_RESULT:' /tmp/super-edge-bench.log || true
+          fi
           if test -f /tmp/super-match.log; then
             grep 'SUPER_MATCH_RESULT:' /tmp/super-match.log || true
           fi
