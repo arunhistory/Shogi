@@ -57,12 +57,12 @@ jobs:
           grep -q 'shogi_input_buffer' /tmp/exports.txt
       - name: Commit generated WASM to experiment branch
         run: |
-          if git diff --quiet -- public/wasm/title_supercomputer.wasm; then
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f public/wasm/title_supercomputer.wasm
+          if git diff --cached --quiet; then
             echo 'WASM unchanged'
             exit 0
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add public/wasm/title_supercomputer.wasm
           git commit -m 'build: add experimental Title supercomputer wasm'
           git push origin HEAD:experiment/title-supercomputer-v1
