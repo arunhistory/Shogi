@@ -77,7 +77,10 @@ jobs:
           ls -lh /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
           sha256sum /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
       - name: Compare exact 5M search performance
-        run: node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
+        run: |
+          TITLE_SUPER_SPECIALIST=1 node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
+          TITLE_SUPER_SPECIALIST=10 node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
+          TITLE_SUPER_SPECIALIST=20 node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm /tmp/title_supercomputer_cached.wasm
       - name: Verify current required exports and state roundtrip
         run: |
           wasm-objdump -x public/wasm/title_supercomputer.wasm | tee /tmp/exports.txt
