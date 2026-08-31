@@ -8,6 +8,8 @@ on:
       - 'cpp/title_supercomputer.cpp'
       - 'scripts/temp-patch-title-super-fastpath.mjs'
       - 'scripts/temp-patch-title-super-metrics.mjs'
+      - 'scripts/temp-patch-title-super-inplace.mjs'
+      - 'scripts/test-title-super-inplace.mjs'
       - '.github/workflows/title-supercomputer-build.yml'
 
 permissions:
@@ -29,10 +31,12 @@ jobs:
         run: node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/title_supercomputer_fast.cpp
       - name: Remove duplicate SuperTitle metric scans
         run: node scripts/temp-patch-title-super-metrics.mjs /tmp/title_supercomputer_fast.cpp /tmp/title_supercomputer_metrics.cpp
+      - name: Replace child copies with make-unmake
+        run: node scripts/temp-patch-title-super-inplace.mjs /tmp/title_supercomputer_metrics.cpp /tmp/title_supercomputer_inplace.cpp
       - name: Build isolated Title supercomputer WASM
         run: |
           mkdir -p public/wasm
-          em++ /tmp/title_supercomputer_metrics.cpp \
+          em++ /tmp/title_supercomputer_inplace.cpp \
             -Icpp \
             -O3 \
             -std=c++17 \
@@ -50,18 +54,21 @@ jobs:
             -Wl,--export=shogi_super_converge \
             -Wl,--export=shogi_super_best_score \
             -Wl,--export=shogi_super_nodes_searched \
+            -Wl,--export=shogi_super_inplace_selftest \
             -o public/wasm/title_supercomputer.wasm
           wasm-opt -O4 public/wasm/title_supercomputer.wasm -o /tmp/title_supercomputer.wasm
           mv /tmp/title_supercomputer.wasm public/wasm/title_supercomputer.wasm
           wasm-validate public/wasm/title_supercomputer.wasm
           ls -lh public/wasm/title_supercomputer.wasm
           sha256sum public/wasm/title_supercomputer.wasm
-      - name: Verify required exports
+      - name: Verify required exports and state roundtrip
         run: |
           wasm-objdump -x public/wasm/title_supercomputer.wasm | tee /tmp/exports.txt
           grep -q 'shogi_super_search_specialist' /tmp/exports.txt
           grep -q 'shogi_super_converge' /tmp/exports.txt
           grep -q 'shogi_input_buffer' /tmp/exports.txt
+          grep -q 'shogi_super_inplace_selftest' /tmp/exports.txt
+          node scripts/test-title-super-inplace.mjs
       - name: Commit generated WASM to experiment branch
         run: |
           git config user.name 'github-actions[bot]'
