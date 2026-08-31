@@ -9,6 +9,7 @@ on:
       - 'scripts/temp-patch-title-super-fastpath.mjs'
       - 'scripts/temp-patch-title-super-metrics.mjs'
       - 'scripts/temp-patch-title-super-inplace.mjs'
+      - 'scripts/temp-fix-title-super-inplace-brace.mjs'
       - 'scripts/test-title-super-inplace.mjs'
       - '.github/workflows/title-supercomputer-build.yml'
 
@@ -32,7 +33,9 @@ jobs:
       - name: Remove duplicate SuperTitle metric scans
         run: node scripts/temp-patch-title-super-metrics.mjs /tmp/title_supercomputer_fast.cpp /tmp/title_supercomputer_metrics.cpp
       - name: Replace child copies with make-unmake
-        run: node scripts/temp-patch-title-super-inplace.mjs /tmp/title_supercomputer_metrics.cpp /tmp/title_supercomputer_inplace.cpp
+        run: |
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/title_supercomputer_metrics.cpp /tmp/title_supercomputer_inplace.cpp
+          node scripts/temp-fix-title-super-inplace-brace.mjs /tmp/title_supercomputer_inplace.cpp
       - name: Build isolated Title supercomputer WASM
         run: |
           mkdir -p public/wasm
