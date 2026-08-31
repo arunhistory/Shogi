@@ -1,0 +1,46 @@
+name: title-44win-generated-js-shortening
+
+on:
+  push:
+    branches:
+      - 'optimize-title-44win-source-shortening'
+    paths:
+      - '.github/workflows/title-44win-generated-js-shortening.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-44win-source-shortening
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Reconstruct exact winning TypeScript path
+        run: |
+          npm ci
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+          npm test
+          npm run build
+      - name: Re-minify representation only
+        run: |
+          set -eu
+          mkdir -p /tmp/short
+          for f in dist/assets/cpu-worker-*.js dist/assets/cpu-search-worker-*.js; do
+            b=$(basename "$f")
+            before=$(wc -c < "$f")
+            ./node_modules/.bin/esbuild "$f" --minify-whitespace --minify-identifiers --target=es2022 --format=esm --outfile="/tmp/short/$b"
+            after=$(wc -c < "/tmp/short/$b")
+            node --check "/tmp/short/$b"
+            echo "GENERATED_JS_SIZE:$b:$before:$after:$((before-after))"
+          done
