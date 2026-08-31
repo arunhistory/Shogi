@@ -1,0 +1,46 @@
+name: title-supercomputer-edge-single-benchmark
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - '.github/workflows/title-supercomputer-edge-single-benchmark.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Benchmark one 5M specialist after a legal sente pawn move
+        shell: bash
+        run: |
+          node <<'NODE'
+          const url='https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer';
+          const key='sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF';
+          const board=[
+            -2,-3,-4,-5,-8,-5,-4,-3,-2,
+             0,-7, 0, 0, 0, 0, 0,-6, 0,
+            -1,-1,-1,-1,-1,-1,-1,-1,-1,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 1, 0, 0, 0, 0,
+             1, 1, 1, 1, 0, 1, 1, 1, 1,
+             0, 6, 0, 0, 0, 0, 0, 7, 0,
+             2, 3, 4, 5, 8, 5, 4, 3, 2
+          ];
+          const positionWords=[0x53484749,-1,...board,...Array(14).fill(0)];
+          if(positionWords.length!==97) throw new Error('POSITION_WORD_COUNT_'+positionWords.length);
+          const started=performance.now();
+          const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':key},body:JSON.stringify({action:'specialist',specialist:1,positionWords})});
+          const text=await response.text();
+          const elapsedMs=performance.now()-started;
+          console.log('EDGE_SINGLE_HTTP:'+JSON.stringify({status:response.status,elapsedMs,body:text.slice(0,1000)}));
+          if(!response.ok)process.exit(1);
+          const data=JSON.parse(text);
+          if(!data?.ok||Number(data.result?.nodes)!==5000000)throw new Error('EDGE_SINGLE_INVALID_RESULT:'+text);
+          console.log('EDGE_SINGLE_RESULT:'+JSON.stringify(data.result));
+          NODE
