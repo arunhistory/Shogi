@@ -10,13 +10,17 @@ function replaceOnce(oldText,newText,label){
 
 // Redirect only the original parallel-search history operations before the
 // wrapper implementations are inserted, so the wrappers cannot self-rewrite.
-const pushAnchor='if (!push_search_history(next, pos.turn))';
+const posPushAnchor='if (!push_search_history(next, pos.turn))';
+const rootPushAnchor='if (!push_search_history(next, root.turn))';
 const popAnchor='pop_search_history();';
-const pushCount=source.split(pushAnchor).length-1;
+const posPushCount=source.split(posPushAnchor).length-1;
+const rootPushCount=source.split(rootPushAnchor).length-1;
 const popCount=source.split(popAnchor).length-1;
-if(pushCount!==3)throw new Error(`UNEXPECTED_PUSH_COUNT:${pushCount}`);
+if(posPushCount!==2)throw new Error(`UNEXPECTED_POS_PUSH_COUNT:${posPushCount}`);
+if(rootPushCount!==1)throw new Error(`UNEXPECTED_ROOT_PUSH_COUNT:${rootPushCount}`);
 if(popCount!==3)throw new Error(`UNEXPECTED_POP_COUNT:${popCount}`);
-source=source.replaceAll(pushAnchor,'if (!push_parallel_search_history(next, pos.turn))');
+source=source.replaceAll(posPushAnchor,'if (!push_parallel_search_history(next, pos.turn))');
+source=source.replace(rootPushAnchor,'if (!push_parallel_search_history(next, root.turn))');
 source=source.replaceAll(popAnchor,'pop_parallel_search_history();');
 
 replaceOnce(
