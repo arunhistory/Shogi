@@ -81,6 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
           docker pull supabase/edge-runtime:v1.74.0
           docker run -d --name supertitle-edge -p 9000:9000 \
             -e 'SUPABASE_PUBLISHABLE_KEYS={"default":"bench"}' \
@@ -104,6 +105,23 @@ jobs:
           const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);const started=performance.now();
           let response,text;try{response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':'bench'},body:JSON.stringify({action:'specialist',specialist:1,positionWords}),signal:controller.signal});text=await response.text();}finally{clearTimeout(timer);}
           const wallMs=performance.now()-started;console.log('SELFHOST_EDGE_HTTP:'+JSON.stringify({status:response.status,wallMs,body:text.slice(0,1000)}));if(!response.ok)process.exit(1);const data=JSON.parse(text);if(!data?.ok||Number(data.result?.nodes)!==5_000_000)throw new Error('SELFHOST_EDGE_INVALID_RESULT:'+text);console.log('SELFHOST_EDGE_RESULT:'+JSON.stringify({...data.result,wallMs}));
+          NODE
+
+      - name: Benchmark two simultaneous exact 5M specialists
+        shell: bash
+        run: |
+          node <<'NODE'
+          const url='http://127.0.0.1:9000/title-supercomputer';
+          const positionWords=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+          const batchStart=performance.now();
+          async function run(id){
+            const started=performance.now();const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);
+            let response,text;try{response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':'bench'},body:JSON.stringify({action:'specialist',specialist:id,positionWords}),signal:controller.signal});text=await response.text();}finally{clearTimeout(timer);}
+            const ended=performance.now();if(!response.ok)throw new Error(`SPECIALIST_${id}_HTTP_${response.status}:${text.slice(0,300)}`);const data=JSON.parse(text);if(!data?.ok||Number(data.result?.nodes)!==5_000_000)throw new Error(`SPECIALIST_${id}_INVALID:${text.slice(0,300)}`);return{id,wallMs:ended-started,startOffsetMs:started-batchStart,endOffsetMs:ended-batchStart,internalMs:Number(data.result.elapsedMs),nodes:Number(data.result.nodes),moveCode:Number(data.result.moveCode),score:Number(data.result.score)};
+          }
+          const results=await Promise.all([run(1),run(10)]);const batchWallMs=performance.now()-batchStart;const sumWallMs=results.reduce((s,x)=>s+x.wallMs,0);const maxWallMs=Math.max(...results.map(x=>x.wallMs));const startSpreadMs=Math.max(...results.map(x=>x.startOffsetMs))-Math.min(...results.map(x=>x.startOffsetMs));const overlapFactor=sumWallMs/batchWallMs;
+          console.log('SELFHOST_EDGE_TWO:'+JSON.stringify({ok:true,batchWallMs,sumWallMs,maxWallMs,startSpreadMs,overlapFactor,results}));
+          if(overlapFactor<=1.05)throw new Error(`NO_MEASURABLE_OVERLAP:${overlapFactor}`);
           NODE
 
       - name: Show runtime logs
