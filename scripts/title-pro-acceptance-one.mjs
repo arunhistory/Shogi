@@ -124,6 +124,7 @@ try{
     const titleSide='gote';
     const proSide='sente';
     const maxPlies=82;
+    const historicalMoveBaselineMs=2600;
     let position=engine.initialPosition();
     let titleNodes=0;
     let proNodes=0;
@@ -186,13 +187,15 @@ try{
       const titleAvgReplyMs=titleReplyTimes.length
         ?titleReplyTimes.reduce((sum,value)=>sum+value,0)/titleReplyTimes.length
         :0;
-      const pass82=gameResult==='title-win'&&position.ply<=82&&titleMaxReplyMs<2600;
-      const goal30=gameResult==='title-win'&&position.ply<=30&&titleMaxReplyMs<2600;
+      const speedImproved=titleReplyTimes.length>0&&titleAvgReplyMs<historicalMoveBaselineMs;
+      const pass82=gameResult==='title-win'&&position.ply<=82&&speedImproved;
+      const goal30=gameResult==='title-win'&&position.ply<=30&&speedImproved;
       return{
         titleSide,proSide,result:gameResult,plies:position.ply,
         winner:outcome.winner??null,reason:outcome.reason??(outcome.ended?'ended':'move-limit'),
         titleNodes,proNodes,titleJobs,proJobs,titleMoves:titleReplyTimes.length,
-        titleMaxReplyMs,titleAvgReplyMs,proMaxReplyMs,pass82,goal30,moveTrace,
+        titleMaxReplyMs,titleAvgReplyMs,proMaxReplyMs,historicalMoveBaselineMs,speedImproved,
+        pass82,goal30,moveTrace,
       };
     }finally{
       titleWorker.terminate();
