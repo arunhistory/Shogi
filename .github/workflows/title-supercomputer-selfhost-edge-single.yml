@@ -99,8 +99,7 @@ jobs:
         run: |
           node <<'NODE'
           const url='http://127.0.0.1:9000/title-supercomputer';
-          const board=[-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,1,1,1,0,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2];
-          const positionWords=[0x53484749,-1,...board,...Array(14).fill(0)];
+          const positionWords=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
           if(positionWords.length!==97)throw new Error(`POSITION_WORD_COUNT:${positionWords.length}`);
           const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);const started=performance.now();
           let response,text;try{response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','apikey':'bench'},body:JSON.stringify({action:'specialist',specialist:1,positionWords}),signal:controller.signal});text=await response.text();}finally{clearTimeout(timer);}
