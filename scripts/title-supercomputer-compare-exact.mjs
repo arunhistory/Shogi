@@ -1,9 +1,8 @@
 import {readFile} from 'node:fs/promises';
+import {titleSuperBenchPosition as words} from './title-supercomputer-bench-position.mjs';
 
 const files=process.argv.slice(2);if(files.length<2)throw new Error('TWO_WASM_PATHS_REQUIRED');
 const specialist=Number(process.env.TITLE_SUPER_SPECIALIST??1),nodeLimit=Number(process.env.TITLE_SUPER_NODES??5_000_000);
-const words=[1397245769,1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
-if(words.length!==97)throw new Error(`POSITION_WORDS:${words.length}`);
 async function run(path){
   const bytes=await readFile(path),{instance}=await WebAssembly.instantiate(bytes,{}),e=instance.exports;
   for(const n of ['memory','shogi_input_buffer','shogi_input_capacity','shogi_legal_move_count','shogi_legal_move_at','shogi_super_search_specialist','shogi_super_best_score','shogi_super_nodes_searched'])if(!(n in e))throw new Error(`${path}:MISSING:${n}`);
