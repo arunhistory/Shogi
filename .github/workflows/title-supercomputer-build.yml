@@ -10,6 +10,7 @@ on:
       - 'scripts/temp-patch-title-super-metrics.mjs'
       - 'scripts/temp-patch-title-super-inplace.mjs'
       - 'scripts/test-title-super-inplace.mjs'
+      - 'scripts/title-supercomputer-local-bench.mjs'
       - '.github/workflows/title-supercomputer-build.yml'
 
 permissions:
@@ -33,34 +34,33 @@ jobs:
         run: node scripts/temp-patch-title-super-metrics.mjs /tmp/title_supercomputer_fast.cpp /tmp/title_supercomputer_metrics.cpp
       - name: Replace child copies with make-unmake
         run: node scripts/temp-patch-title-super-inplace.mjs /tmp/title_supercomputer_metrics.cpp /tmp/title_supercomputer_inplace.cpp
-      - name: Build isolated Title supercomputer WASM
+      - name: Build metrics and inplace WASM variants
         run: |
           mkdir -p public/wasm
-          em++ /tmp/title_supercomputer_inplace.cpp \
-            -Icpp \
-            -O3 \
-            -std=c++17 \
-            -include initializer_list \
-            -s WASM=1 \
-            -s STANDALONE_WASM=1 \
-            --no-entry \
-            -Wl,--export=shogi_input_buffer \
-            -Wl,--export=shogi_input_capacity \
-            -Wl,--export=shogi_legal_move_count \
-            -Wl,--export=shogi_legal_move_at \
-            -Wl,--export=shogi_is_check \
-            -Wl,--export=shogi_is_mate \
-            -Wl,--export=shogi_super_search_specialist \
-            -Wl,--export=shogi_super_converge \
-            -Wl,--export=shogi_super_best_score \
-            -Wl,--export=shogi_super_nodes_searched \
-            -Wl,--export=shogi_super_inplace_selftest \
-            -o public/wasm/title_supercomputer.wasm
-          wasm-opt -O4 public/wasm/title_supercomputer.wasm -o /tmp/title_supercomputer.wasm
-          mv /tmp/title_supercomputer.wasm public/wasm/title_supercomputer.wasm
+          COMMON_FLAGS=(
+            -Icpp -O3 -std=c++17 -include initializer_list
+            -s WASM=1 -s STANDALONE_WASM=1 --no-entry
+            -Wl,--export=shogi_input_buffer
+            -Wl,--export=shogi_input_capacity
+            -Wl,--export=shogi_legal_move_count
+            -Wl,--export=shogi_legal_move_at
+            -Wl,--export=shogi_is_check
+            -Wl,--export=shogi_is_mate
+            -Wl,--export=shogi_super_search_specialist
+            -Wl,--export=shogi_super_converge
+            -Wl,--export=shogi_super_best_score
+            -Wl,--export=shogi_super_nodes_searched
+          )
+          em++ /tmp/title_supercomputer_metrics.cpp "${COMMON_FLAGS[@]}" -o /tmp/title_supercomputer_metrics_raw.wasm
+          wasm-opt -O4 /tmp/title_supercomputer_metrics_raw.wasm -o /tmp/title_supercomputer_metrics.wasm
+          em++ /tmp/title_supercomputer_inplace.cpp "${COMMON_FLAGS[@]}" -Wl,--export=shogi_super_inplace_selftest -o /tmp/title_supercomputer_inplace_raw.wasm
+          wasm-opt -O4 /tmp/title_supercomputer_inplace_raw.wasm -o public/wasm/title_supercomputer.wasm
+          wasm-validate /tmp/title_supercomputer_metrics.wasm
           wasm-validate public/wasm/title_supercomputer.wasm
-          ls -lh public/wasm/title_supercomputer.wasm
-          sha256sum public/wasm/title_supercomputer.wasm
+          ls -lh /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm
+          sha256sum /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm
+      - name: Compare exact 5M search performance
+        run: node scripts/title-supercomputer-local-bench.mjs /tmp/title_supercomputer_metrics.wasm public/wasm/title_supercomputer.wasm
       - name: Verify required exports and state roundtrip
         run: |
           wasm-objdump -x public/wasm/title_supercomputer.wasm | tee /tmp/exports.txt
