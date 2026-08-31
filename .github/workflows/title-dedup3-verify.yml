@@ -1,0 +1,45 @@
+name: title-dedup3-verify
+
+on:
+  push:
+    branches:
+      - 'optimize-title-82win-dedup3'
+    paths:
+      - '.github/workflows/title-dedup3-verify.yml'
+      - 'scripts/temp-patch-title-dedup3.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-82win-dedup3
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Build baseline engine and install dependencies
+        run: |
+          sh scripts/build-wasm.sh
+          npm ci
+      - name: Apply cumulative Title duplicate-work elimination
+        run: |
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Verify tests build engine and dependencies
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
