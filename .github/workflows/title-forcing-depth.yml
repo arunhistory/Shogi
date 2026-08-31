@@ -1,0 +1,79 @@
+name: title-forcing-depth
+
+on:
+  push:
+    branches:
+      - 'optimize-title-forcing-depth'
+    paths:
+      - '.github/workflows/title-forcing-depth.yml'
+      - 'scripts/temp-patch-title-forcing-depth.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  live-match:
+    strategy:
+      fail-fast: false
+      matrix:
+        forcingDepth: [6, 8]
+        trial: [1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: optimize-title-forcing-depth
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: Install dependencies and fetch proven optimization patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm ci
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-eval-snapshot-speed.mjs?ref=optimize-title-82win-eval' > /tmp/title-hotcore.mjs
+          gh api -H 'Accept: application/vnd.github.raw+json' 'repos/arunhistory/Shogi/contents/scripts/temp-patch-title-incremental-history-hash-v2.mjs?ref=optimize-title-82win-history-hash' > /tmp/title-historyhash.mjs
+      - name: Apply Title C++ candidate
+        run: |
+          node /tmp/title-hotcore.mjs
+          node /tmp/title-historyhash.mjs
+          node scripts/temp-patch-title-forcing-depth.mjs '${{ matrix.forcingDepth }}'
+          sh scripts/build-wasm.sh
+      - name: Apply stable Title runtime path
+        run: |
+          node scripts/temp-patch-title-dedup2.mjs
+          node scripts/temp-patch-title-dedup3.mjs
+          node scripts/temp-patch-title-stage-coverage.mjs
+          node scripts/temp-patch-title-tempo.mjs
+          node scripts/temp-patch-title-parallel-engine.mjs
+      - name: Verify candidate before live match
+        run: |
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+      - name: Run isolated Pro-sente versus Title-gote match
+        run: |
+          node scripts/title-pro-acceptance-one.mjs '${{ matrix.trial }}' 'forcing-depth-${{ matrix.forcingDepth }}' | tee /tmp/title-acceptance.log
+      - name: Evaluate user acceptance criteria
+        run: |
+          node --input-type=module <<'JS'
+          import {readFile} from 'node:fs/promises';
+          const text=await readFile('/tmp/title-acceptance.log','utf8');
+          const line=text.split(/\r?\n/).find(value=>value.startsWith('TITLE_ACCEPTANCE_RESULT:'));
+          if(!line)throw new Error('TITLE_ACCEPTANCE_RESULT_MISSING');
+          const result=JSON.parse(line.slice('TITLE_ACCEPTANCE_RESULT:'.length));
+          console.log(`TITLE_FORCING_ACCEPTANCE:${JSON.stringify({
+            forcingDepth:'${{ matrix.forcingDepth }}',trial:result.trial,result:result.result,plies:result.plies,
+            titleAvgReplyMs:result.titleAvgReplyMs,titleMaxReplyMs:result.titleMaxReplyMs,
+            speedImproved:result.speedImproved,pass82:result.pass82,goal30:result.goal30,
+            titleNodes:result.titleNodes,titleJobs:result.titleJobs,
+          })}`);
+          if(!result.pass82)process.exit(1);
+          JS
