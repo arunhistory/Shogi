@@ -7,6 +7,8 @@ const host='127.0.0.1';
 const devPort=4193;
 const debuggingPort=9243;
 const appUrl=`http://${host}:${devPort}/`;
+const titleUrl='https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer';
+const titleKey='sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
 
@@ -57,16 +59,18 @@ try{
   const result=await evaluate(cdp,`(async()=>{
     const engine=await import('/src/game/engine.ts');
     const regularWasmUrl=new URL('/wasm/shogi_engine.wasm',location.origin).toString();
-    const superWasmUrl=new URL('/wasm/title_supercomputer.wasm',location.origin).toString();
+    const TITLE_URL=${JSON.stringify(titleUrl)};
+    const TITLE_KEY=${JSON.stringify(titleKey)};
     const proWorker=new Worker('/src/game/cpu-worker.ts',{type:'module'});
-    const specialists=Array.from({length:20},()=>new Worker('/src/game/title-super-worker.ts',{type:'module'}));
-    const convergenceWorker=new Worker('/src/game/title-super-worker.ts',{type:'module'});
     const titleSide='gote',proSide='sente',maxPlies=82;
+    const POSITION_MAGIC=0x53484749,POSITION_WORDS=97;
+    const pieceCodes={pawn:1,lance:2,knight:3,silver:4,gold:5,bishop:6,rook:7,king:8,tokin:9,promotedLance:10,promotedKnight:11,promotedSilver:12,horse:13,dragon:14};
+    const handKinds=['pawn','lance','knight','silver','gold','bishop','rook'];
     const moveKey=m=>String(m?.from??'drop')+'>'+String(m?.to)+'|'+String(m?.drop??'')+'|'+(m?.promote?1:0);
     const decodeMove=code=>{if(!Number.isInteger(code)||code<0)return null;const to=code&0x7f,from=(code>>7)&0x7f,drop=(code>>14)&0xf,promote=((code>>18)&1)===1;if(to<0||to>=81)return null;const dst=[Math.floor(to/9),to%9];if(drop){const kinds={1:'pawn',2:'lance',3:'knight',4:'silver',5:'gold',6:'bishop',7:'rook'};if(!kinds[drop]||from!==127||promote)return null;return{drop:kinds[drop],to:dst};}if(from<0||from>=81)return null;return{from:[Math.floor(from/9),from%9],to:dst,...(promote?{promote:true}:{})};};
+    const encodePosition=position=>{const words=new Array(POSITION_WORDS).fill(0);words[0]=POSITION_MAGIC;words[1]=position.turn==='sente'?1:-1;let index=2;for(const row of position.board)for(const piece of row)words[index++]=piece?(piece.side==='sente'?1:-1)*pieceCodes[piece.kind]:0;for(const side of ['sente','gote'])for(const kind of handKinds)words[index++]=position.hands[side][kind];if(index!==POSITION_WORDS)throw new Error('POSITION_ENCODING_SIZE:'+index);return words;};
     const request=(worker,payload,timeoutMs)=>new Promise((resolve,reject)=>{const requestId=crypto.randomUUID();const timer=setTimeout(()=>{cleanup();reject(new Error('WORKER_TIMEOUT:'+payload.type));},timeoutMs);const cleanup=()=>{clearTimeout(timer);worker.removeEventListener('message',onMessage);worker.removeEventListener('error',onError);};const onError=()=>{cleanup();reject(new Error('WORKER_ERROR:'+payload.type));};const onMessage=event=>{const data=event.data;if(data?.requestId!==requestId)return;cleanup();data.ok?resolve(data):reject(new Error(data?.error??'WORKER_FAILED'));};worker.addEventListener('message',onMessage);worker.addEventListener('error',onError);worker.postMessage({...payload,requestId});});
-    const warm=worker=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>{cleanup();reject(new Error('SUPER_WARMUP_TIMEOUT'));},10000);const cleanup=()=>{clearTimeout(timer);worker.removeEventListener('message',onMessage);worker.removeEventListener('error',onError);};const onError=()=>{cleanup();reject(new Error('SUPER_WARMUP_ERROR'));};const onMessage=event=>{if(event.data?.type!=='ready')return;cleanup();resolve();};worker.addEventListener('message',onMessage);worker.addEventListener('error',onError);worker.postMessage({type:'warmup',wasmUrl:superWasmUrl});});
-    await Promise.all([...specialists,convergenceWorker].map(warm));
+    const callTitle=async(body,timeoutMs=15000)=>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeoutMs);try{const response=await fetch(TITLE_URL,{method:'POST',headers:{'content-type':'application/json','apikey':TITLE_KEY},body:JSON.stringify(body),signal:controller.signal,cache:'no-store',credentials:'omit'});const text=await response.text();let data;try{data=JSON.parse(text);}catch{throw new Error('TITLE_NON_JSON_HTTP_'+response.status);}if(!response.ok||!data?.ok)throw new Error('TITLE_HTTP_'+response.status+':'+String(data?.error??'UNKNOWN'));return data.result;}finally{clearTimeout(timer);}};
     let position=engine.initialPosition();
     proWorker.postMessage({type:'warmup',position,level:'pro',wasmUrl:regularWasmUrl});
     await new Promise(resolve=>setTimeout(resolve,400));
@@ -74,33 +78,14 @@ try{
     let titleTotalNodes=0,titleSpecialistNodes=0,titleConvergenceNodes=0,proNodes=0;
     let titleMaxMs=0,proMaxMs=0;const titleTimes=[],proTimes=[];
     const searchPro=async pos=>{const started=performance.now();const r=await request(proWorker,{type:'search',position:pos,level:'pro',wasmUrl:regularWasmUrl},10000);return{move:r.result.move,nodes:Number(r.result.nodesVisited??0),elapsedMs:performance.now()-started,depth:Number(r.result.completedDepth??0)};};
-    const searchTitle=async pos=>{
-      const started=performance.now();
-      const specialistStarted=performance.now();
-      const rows=await Promise.all(specialists.map((worker,index)=>request(worker,{type:'specialist',position:pos,specialist:index+1,wasmUrl:superWasmUrl},180000)));
-      const specialistWallMs=performance.now()-specialistStarted;
-      const candidates=rows.map(r=>r.moveCode);
-      const convergenceStarted=performance.now();
-      const final=await request(convergenceWorker,{type:'converge',position:pos,candidates,wasmUrl:superWasmUrl},180000);
-      const convergenceWallMs=performance.now()-convergenceStarted;
-      const move=decodeMove(final.moveCode);if(!move)throw new Error('SUPER_MOVE_DECODE_FAILED');
-      const legal=engine.legalMoves(pos);if(!legal.some(candidate=>moveKey(candidate)===moveKey(move)))throw new Error('SUPER_ILLEGAL_MOVE:'+JSON.stringify(move));
-      const specialistNodes=rows.reduce((sum,r)=>sum+Number(r.nodes??0),0),convergenceNodes=Number(final.nodes??0);
-      return{move,elapsedMs:performance.now()-started,specialistWallMs,convergenceWallMs,specialistNodes,convergenceNodes,totalNodes:specialistNodes+convergenceNodes,specialistMaxInternalMs:Math.max(...rows.map(r=>Number(r.elapsedMs??0))),specialistMoves:candidates,score:Number(final.score??0)};
-    };
+    const searchTitle=async pos=>{const started=performance.now(),positionWords=encodePosition(pos);const specialistStarted=performance.now();const rows=await Promise.all(Array.from({length:20},(_,index)=>callTitle({action:'specialist',specialist:index+1,positionWords})));const specialistWallMs=performance.now()-specialistStarted;const candidates=rows.map(r=>Number(r.moveCode)|0);const convergenceStarted=performance.now();const final=await callTitle({action:'converge',positionWords,candidates});const convergenceWallMs=performance.now()-convergenceStarted;const move=decodeMove(Number(final.moveCode));if(!move)throw new Error('SUPER_MOVE_DECODE_FAILED:'+String(final.moveCode));const legal=engine.legalMoves(pos);if(!legal.some(candidate=>moveKey(candidate)===moveKey(move)))throw new Error('SUPER_ILLEGAL_MOVE:'+JSON.stringify(move));const specialistNodes=rows.reduce((sum,r)=>sum+Number(r.nodes??0),0),convergenceNodes=Number(final.nodes??0);return{move,elapsedMs:performance.now()-started,specialistWallMs,convergenceWallMs,specialistNodes,convergenceNodes,totalNodes:specialistNodes+convergenceNodes,specialistMaxInternalMs:Math.max(...rows.map(r=>Number(r.elapsedMs??0))),specialistMinInternalMs:Math.min(...rows.map(r=>Number(r.elapsedMs??0))),specialistMoves:candidates,score:Number(final.score??0),convergenceInternalMs:Number(final.elapsedMs??0)};};
     try{
       while(!outcome.ended&&position.ply<maxPlies){
-        if(position.turn===proSide){
-          const r=await searchPro(position);proNodes+=r.nodes;proTimes.push(r.elapsedMs);proMaxMs=Math.max(proMaxMs,r.elapsedMs);trace.push({ply:position.ply+1,side:position.turn,level:'pro',move:r.move,elapsedMs:r.elapsedMs,nodes:r.nodes,depth:r.depth});position=engine.applyMove(position,r.move);
-        }else{
-          const r=await searchTitle(position);titleSpecialistNodes+=r.specialistNodes;titleConvergenceNodes+=r.convergenceNodes;titleTotalNodes+=r.totalNodes;titleTimes.push(r.elapsedMs);titleMaxMs=Math.max(titleMaxMs,r.elapsedMs);trace.push({ply:position.ply+1,side:position.turn,level:'title-supercomputer',move:r.move,elapsedMs:r.elapsedMs,specialistWallMs:r.specialistWallMs,convergenceWallMs:r.convergenceWallMs,specialistNodes:r.specialistNodes,convergenceNodes:r.convergenceNodes,totalNodes:r.totalNodes,specialistMaxInternalMs:r.specialistMaxInternalMs,score:r.score});position=engine.applyMove(position,r.move);
-        }
+        if(position.turn===proSide){const r=await searchPro(position);proNodes+=r.nodes;proTimes.push(r.elapsedMs);proMaxMs=Math.max(proMaxMs,r.elapsedMs);trace.push({ply:position.ply+1,side:position.turn,level:'pro',move:r.move,elapsedMs:r.elapsedMs,nodes:r.nodes,depth:r.depth});position=engine.applyMove(position,r.move);}else{const r=await searchTitle(position);titleSpecialistNodes+=r.specialistNodes;titleConvergenceNodes+=r.convergenceNodes;titleTotalNodes+=r.totalNodes;titleTimes.push(r.elapsedMs);titleMaxMs=Math.max(titleMaxMs,r.elapsedMs);trace.push({ply:position.ply+1,side:position.turn,level:'title-supercomputer',move:r.move,elapsedMs:r.elapsedMs,specialistWallMs:r.specialistWallMs,convergenceWallMs:r.convergenceWallMs,specialistNodes:r.specialistNodes,convergenceNodes:r.convergenceNodes,totalNodes:r.totalNodes,specialistMaxInternalMs:r.specialistMaxInternalMs,specialistMinInternalMs:r.specialistMinInternalMs,convergenceInternalMs:r.convergenceInternalMs,score:r.score});position=engine.applyMove(position,r.move);}
         outcome=engine.gameOutcome(position);
       }
-      const gameResult=outcome.ended?(outcome.winner===titleSide?'title-win':outcome.winner===proSide?'pro-win':'draw'):'over-82';
-      const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;
-      return{result:gameResult,plies:position.ply,winner:outcome.winner??null,reason:outcome.reason??(outcome.ended?'ended':'move-limit'),titleSide,proSide,titleMoves:titleTimes.length,titleAvgMs:avg(titleTimes),titleMaxMs,titleUnder3s:titleTimes.every(v=>v<=3000),titleSpecialistNodes,titleConvergenceNodes,titleTotalNodes,proAvgMs:avg(proTimes),proMaxMs,proNodes,trace};
-    }finally{proWorker.terminate();for(const w of specialists)w.terminate();convergenceWorker.terminate();}
+      const gameResult=outcome.ended?(outcome.winner===titleSide?'title-win':outcome.winner===proSide?'pro-win':'draw'):'over-82';const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;return{result:gameResult,plies:position.ply,winner:outcome.winner??null,reason:outcome.reason??(outcome.ended?'ended':'move-limit'),titleSide,proSide,titleMoves:titleTimes.length,titleAvgMs:avg(titleTimes),titleMaxMs,titleUnder3s:titleTimes.every(v=>v<=3000),titleSpecialistNodes,titleConvergenceNodes,titleTotalNodes,proAvgMs:avg(proTimes),proMaxMs,proNodes,trace};
+    }finally{proWorker.terminate();}
   })()`);
   console.log('SUPER_MATCH_RESULT:'+JSON.stringify(result));
 }finally{cdp?.close();await stopChild(chrome);await stopChild(dev);await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
