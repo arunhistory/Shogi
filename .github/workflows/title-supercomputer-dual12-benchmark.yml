@@ -1,0 +1,157 @@
+name: title-supercomputer-dual12-benchmark
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - 'scripts/temp-patch-title-super-dual12.mjs'
+      - '.github/workflows/title-supercomputer-dual12-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_BUDGET: '5000000'
+      POSITION_WORDS: '[1397245769,-1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,1,0,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+
+      - name: Install Emscripten toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+          echo "RUNNER_NPROC:$(nproc)"
+          em++ --version | head -n 1
+
+      - name: Reconstruct current optimized source and dual-CPU variant
+        run: |
+          set -euo pipefail
+          node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
+          node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-single.cpp
+          node scripts/temp-patch-title-super-dual12.mjs /tmp/super-single.cpp /tmp/super-dual12.cpp
+          grep -q 'std::thread helper' /tmp/super-dual12.cpp
+          grep -q 'specialist==12' /tmp/super-dual12.cpp
+
+      - name: Build matched single-CPU baseline
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-single.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -s WASM=1 -s STANDALONE_WASM=1 --no-entry \
+            -Wl,--export=shogi_input_buffer \
+            -Wl,--export=shogi_input_capacity \
+            -Wl,--export=shogi_super_search_specialist \
+            -Wl,--export=shogi_super_best_score \
+            -Wl,--export=shogi_super_nodes_searched \
+            -Wl,--export=shogi_super_inplace_selftest \
+            -o /tmp/single.raw.wasm
+          wasm-opt -O4 /tmp/single.raw.wasm -o /tmp/single.wasm
+          wasm-validate /tmp/single.wasm
+
+      - name: Build two-CPU coupled Specialist 12
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-dual12.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -pthread \
+            -s WASM=1 \
+            -s ENVIRONMENT=node \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME=createDual12 \
+            -s PTHREAD_POOL_SIZE=1 \
+            -s ALLOW_MEMORY_GROWTH=0 \
+            -s INITIAL_MEMORY=67108864 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_search_specialist","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32"]' \
+            --no-entry \
+            -o /tmp/dual12.js
+          wasm-validate --enable-threads /tmp/dual12.wasm
+          ls -lh /tmp/dual12.js /tmp/dual12.wasm
+          test -f /tmp/dual12.worker.js && ls -lh /tmp/dual12.worker.js || true
+
+      - name: Compare exact 5M Specialist 12 calculation
+        run: |
+          cat > /tmp/dual12-benchmark.mjs <<'NODE'
+          import {readFile} from 'node:fs/promises';
+          import {createRequire} from 'node:module';
+          import {performance} from 'node:perf_hooks';
+
+          const position=JSON.parse(process.env.POSITION_WORDS);
+          const budget=Number(process.env.NODE_BUDGET);
+          if(position.length!==97)throw new Error('POSITION_WORDS_INVALID');
+          if(budget!==5_000_000)throw new Error('NODE_BUDGET_CHANGED');
+
+          const singleBytes=await readFile('/tmp/single.wasm');
+          const singleInstance=await WebAssembly.instantiate(singleBytes,{});
+          const s=singleInstance.instance.exports;
+          if(typeof s._initialize==='function')s._initialize();
+          const singleInput=new Int32Array(s.memory.buffer,s.shogi_input_buffer(),s.shogi_input_capacity());
+          singleInput.fill(0,0,97);singleInput.set(Int32Array.from(position),0);
+          const singleSelftest=Number(s.shogi_super_inplace_selftest(97));
+          if(singleSelftest<=0)throw new Error('SINGLE_SELFTEST_FAILED:'+singleSelftest);
+
+          const require=createRequire(import.meta.url);
+          const createDual12=require('/tmp/dual12.js');
+          const dual=await createDual12({locateFile:(path)=>'/tmp/'+path});
+          const dualPtr=dual._shogi_input_buffer();
+          dual.HEAP32.fill(0,dualPtr>>2,(dualPtr>>2)+97);
+          dual.HEAP32.set(Int32Array.from(position),dualPtr>>2);
+          const dualSelftest=Number(dual._shogi_super_inplace_selftest(97));
+          if(dualSelftest<=0)throw new Error('DUAL_SELFTEST_FAILED:'+dualSelftest);
+
+          function oneSingle(){
+            const t=performance.now();
+            const move=Number(s.shogi_super_search_specialist(97,12,12,budget));
+            const ms=performance.now()-t;
+            return {move,score:Number(s.shogi_super_best_score()),nodes:Number(s.shogi_super_nodes_searched()),ms};
+          }
+          function oneDual(){
+            const t=performance.now();
+            const move=Number(dual._shogi_super_search_specialist(97,12,12,budget));
+            const ms=performance.now()-t;
+            return {move,score:Number(dual._shogi_super_best_score()),nodes:Number(dual._shogi_super_nodes_searched()),ms};
+          }
+
+          const single=[];const dualRuns=[];
+          single.push(oneSingle());
+          dualRuns.push(oneDual());
+          single.push(oneSingle());
+          dualRuns.push(oneDual());
+          for(const r of [...single,...dualRuns])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
+
+          const avg=a=>a.reduce((n,x)=>n+x.ms,0)/a.length;
+          const singleAvg=avg(single),dualAvg=avg(dualRuns);
+          const result={
+            specialist:12,
+            nodeBudget:budget,
+            cpuModel:'single vs main+1 pthread worker',
+            single,
+            dual:dualRuns,
+            singleAvgMs:singleAvg,
+            dualAvgMs:dualAvg,
+            speedup:singleAvg/dualAvg,
+            moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,
+            moveStableDual:dualRuns[0].move===dualRuns[1].move&&dualRuns[0].score===dualRuns[1].score,
+            sameDecision:single[0].move===dualRuns[0].move&&single[0].score===dualRuns[0].score,
+            selftest:{single:singleSelftest,dual:dualSelftest},
+          };
+          console.log('DUAL12_RESULT:'+JSON.stringify(result));
+          NODE
+          node /tmp/dual12-benchmark.mjs | tee /tmp/dual12-result.log
+          grep -q '^DUAL12_RESULT:' /tmp/dual12-result.log
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual12-result
+          path: /tmp/dual12-result.log
+          retention-days: 1
