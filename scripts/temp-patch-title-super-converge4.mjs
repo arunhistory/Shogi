@@ -71,31 +71,51 @@ int32_t super_search_converge4(const Position&root,int maxDepth,int nodeLimit,co
   MoveList roots;if(restrictMoves&&restrictCount>0){for(int i=0;i<all.count;++i){const int32_t code=encode_move(all.items[i]);for(int j=0;j<restrictCount;++j)if(code==restrictMoves[j]){roots.add(all.items[i]);break;}}}else roots=all;
   if(roots.count==0)roots=all;super_order_moves(root,roots,0);g_node_limit=nodeLimit<100?100:nodeLimit>5000000?5000000:nodeLimit;g_super_nodes.store(0,std::memory_order_relaxed);
   int32_t bestMove=encode_move(roots.items[0]);int bestScore=-kInfinity;const int perspective=root.turn;
-  std::atomic<int> nextRoot{1},phase{0},done{0},currentDepth{0},sharedAlpha{-kInfinity},sharedBestIndex{0};std::atomic<bool> stop{false};std::mutex bestMutex;
-  auto searchShared=[&](int depth){
+
+  Position splitBase=root;MoveList splitMoves;
+  std::atomic<int> splitNext{1},phase{0},done{0},splitDepth{0},splitPly{0},splitAlpha{-kInfinity},splitBest{-kInfinity};
+  std::atomic<bool> stop{false},splitCutoff{false};int splitBeta=kInfinity;std::mutex splitBestMutex;
+
+  auto processSplit=[&](){
+    const int depth=splitDepth.load(std::memory_order_relaxed),ply=splitPly.load(std::memory_order_relaxed);
     for(;;){
-      if(super_nodes_now()>=g_node_limit)break;
-      const int i=nextRoot.fetch_add(1,std::memory_order_relaxed);if(i>=roots.count)break;
-      const int alphaSnapshot=sharedAlpha.load(std::memory_order_acquire);
-      Position work=root;const Move m=roots.items[i];SuperUndo undo;super_make_move(work,m,undo);
-      const int score=-super_negamax(work,depth-1,-kInfinity,-alphaSnapshot,perspective,0,1);
+      if(splitCutoff.load(std::memory_order_acquire)||super_nodes_now()>=g_node_limit)break;
+      const int i=splitNext.fetch_add(1,std::memory_order_relaxed);if(i>=splitMoves.count)break;
+      const int alphaSnapshot=splitAlpha.load(std::memory_order_acquire);
+      Position work=splitBase;const Move m=splitMoves.items[i];SuperUndo undo;super_make_move(work,m,undo);
+      const int score=-super_negamax(work,depth-1,-splitBeta,-alphaSnapshot,perspective,0,ply+1);
       super_unmake_move(work,m,undo);
-      if(score>alphaSnapshot){
-        std::lock_guard<std::mutex> lock(bestMutex);
-        const int current=sharedAlpha.load(std::memory_order_relaxed);
-        if(score>current){sharedAlpha.store(score,std::memory_order_release);sharedBestIndex.store(i,std::memory_order_relaxed);}
+      {
+        std::lock_guard<std::mutex> lock(splitBestMutex);
+        int best=splitBest.load(std::memory_order_relaxed);if(score>best)splitBest.store(score,std::memory_order_relaxed);
+        int alpha=splitAlpha.load(std::memory_order_relaxed);if(score>alpha){alpha=score;splitAlpha.store(alpha,std::memory_order_release);if(alpha>=splitBeta)splitCutoff.store(true,std::memory_order_release);}
       }
     }
   };
-  auto helperLoop=[&](){int seen=0;for(;;){while(!stop.load(std::memory_order_acquire)&&phase.load(std::memory_order_acquire)==seen)std::this_thread::yield();if(stop.load(std::memory_order_acquire))break;seen=phase.load(std::memory_order_acquire);searchShared(currentDepth.load(std::memory_order_relaxed));done.fetch_add(1,std::memory_order_release);}};
+  auto helperLoop=[&](){int seen=0;for(;;){while(!stop.load(std::memory_order_acquire)&&phase.load(std::memory_order_acquire)==seen)std::this_thread::yield();if(stop.load(std::memory_order_acquire))break;seen=phase.load(std::memory_order_acquire);processSplit();done.fetch_add(1,std::memory_order_release);}};
   std::thread helper1(helperLoop),helper2(helperLoop),helper3(helperLoop);
+
+  auto negamax4=[&](Position&pos,int depth,int alpha,int beta,int ply)->int{
+    if(!super_take_node())return super_specialist_eval(pos,perspective,0)*(pos.turn==perspective?1:-1);
+    if(depth<=0)return super_qsearch(pos,alpha,beta,perspective,0,0);
+    MoveList moves;super_generate_legal(pos,moves);if(moves.count==0)return super_is_check(pos,pos.turn)?-kMateScore+ply:0;super_order_moves(pos,moves,0);
+    const Move first=moves.items[0];Position firstWork=pos;SuperUndo firstUndo;super_make_move(firstWork,first,firstUndo);
+    int best=-super_negamax(firstWork,depth-1,-beta,-alpha,perspective,0,ply+1);super_unmake_move(firstWork,first,firstUndo);
+    if(best>alpha)alpha=best;if(alpha>=beta||moves.count<=1||super_nodes_now()>=g_node_limit)return best;
+
+    splitBase=pos;splitMoves=moves;splitNext.store(1,std::memory_order_relaxed);done.store(0,std::memory_order_relaxed);
+    splitDepth.store(depth,std::memory_order_relaxed);splitPly.store(ply,std::memory_order_relaxed);splitAlpha.store(alpha,std::memory_order_release);splitBest.store(best,std::memory_order_relaxed);splitBeta=beta;splitCutoff.store(false,std::memory_order_release);
+    phase.fetch_add(1,std::memory_order_release);processSplit();while(done.load(std::memory_order_acquire)<3)std::this_thread::yield();
+    return splitBest.load(std::memory_order_relaxed);
+  };
+
+  Position work=root;
   for(int depth=1;depth<=maxDepth&&super_nodes_now()<g_node_limit;++depth){
-    Position firstWork=root;const Move first=roots.items[0];SuperUndo firstUndo;super_make_move(firstWork,first,firstUndo);const int firstScore=-super_negamax(firstWork,depth-1,-kInfinity,kInfinity,perspective,0,1);super_unmake_move(firstWork,first,firstUndo);
-    sharedAlpha.store(firstScore,std::memory_order_release);sharedBestIndex.store(0,std::memory_order_relaxed);
-    nextRoot.store(1,std::memory_order_relaxed);done.store(0,std::memory_order_relaxed);currentDepth.store(depth,std::memory_order_relaxed);
-    if(super_nodes_now()<g_node_limit&&roots.count>1){phase.fetch_add(1,std::memory_order_release);searchShared(depth);while(done.load(std::memory_order_acquire)<3)std::this_thread::yield();}
-    const bool completed=super_nodes_now()<g_node_limit&&nextRoot.load(std::memory_order_relaxed)>=roots.count;
-    const int layerBest=sharedAlpha.load(std::memory_order_acquire);const int layerIndex=sharedBestIndex.load(std::memory_order_relaxed);const int32_t layerMove=encode_move(roots.items[layerIndex]);
+    int layerBest=-kInfinity;int32_t layerMove=bestMove;bool completed=true;
+    for(int i=0;i<roots.count;++i){
+      const Move m=roots.items[i];SuperUndo undo;super_make_move(work,m,undo);const int score=-negamax4(work,depth-1,-kInfinity,kInfinity,1);super_unmake_move(work,m,undo);
+      if(score>layerBest){layerBest=score;layerMove=encode_move(m);}if(super_nodes_now()>=g_node_limit){completed=false;break;}
+    }
     if(completed||depth==1){bestMove=layerMove;bestScore=layerBest;}if(bestScore>=kMateScore-256)break;
   }
   stop.store(true,std::memory_order_release);phase.fetch_add(1,std::memory_order_release);helper1.join();helper2.join();helper3.join();
