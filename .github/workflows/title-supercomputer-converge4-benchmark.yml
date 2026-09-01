@@ -43,10 +43,12 @@ jobs:
           grep -q 'std::thread helper1' /tmp/super-converge4.cpp
           grep -q 'helper2' /tmp/super-converge4.cpp
           grep -q 'helper3' /tmp/super-converge4.cpp
-          grep -q 'sharedAlpha' /tmp/super-converge4.cpp
-          grep -q 'alphaSnapshot' /tmp/super-converge4.cpp
+          grep -q 'splitAlpha' /tmp/super-converge4.cpp
+          grep -q 'negamax4' /tmp/super-converge4.cpp
+          grep -q 'splitBase=pos' /tmp/super-converge4.cpp
           grep -q 'specialist==0' /tmp/super-converge4.cpp
           if grep -q 'constexpr int kUnset' /tmp/super-converge4.cpp; then echo 'obsolete independent convergence implementation still present'; exit 1; fi
+          if grep -q 'sharedAlpha' /tmp/super-converge4.cpp; then echo 'obsolete root-shared convergence implementation still present'; exit 1; fi
 
       - name: Build matched single-thread baseline
         run: |
@@ -64,7 +66,7 @@ jobs:
           wasm-opt -O4 /tmp/single.raw.wasm -o /tmp/single.wasm
           wasm-validate /tmp/single.wasm
 
-      - name: Build four-core four-thread shared convergence
+      - name: Build four-core four-thread cooperative convergence
         run: |
           set -euo pipefail
           em++ /tmp/super-converge4.cpp \
@@ -130,7 +132,7 @@ jobs:
           for(const r of [...single,...quadRuns])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
           const avg=a=>a.reduce((n,x)=>n+x.ms,0)/a.length;
           const singleAvg=avg(single),quadAvg=avg(quadRuns);
-          const result={nodeBudget:budget,candidateCount:candidates.length,cpuModel:'one shared alpha-beta convergence search on 4 cores / 4 threads',single,quad:quadRuns,singleAvgMs:singleAvg,quadAvgMs:quadAvg,speedup:singleAvg/quadAvg,moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,moveStableQuad:quadRuns[0].move===quadRuns[1].move&&quadRuns[0].score===quadRuns[1].score,selftest:{single:singleSelftest,quad:quadSelftest}};
+          const result={nodeBudget:budget,candidateCount:candidates.length,cpuModel:'one convergence; root candidates stay serial; each candidate alpha-beta branch uses main+3 helper threads',single,quad:quadRuns,singleAvgMs:singleAvg,quadAvgMs:quadAvg,speedup:singleAvg/quadAvg,moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,moveStableQuad:quadRuns[0].move===quadRuns[1].move&&quadRuns[0].score===quadRuns[1].score,selftest:{single:singleSelftest,quad:quadSelftest}};
           console.log('CONVERGE4_RESULT:'+JSON.stringify(result));
           quad.PThread.terminateAllThreads();
           NODE
