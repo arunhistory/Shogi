@@ -1,0 +1,171 @@
+name: title-supercomputer-github-runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      state_b64:
+        description: 'Internal match state. Empty starts a new Pro-sente vs SuperTitle-gote game.'
+        required: false
+        default: ''
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - '.title-supercomputer-start'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: title-supercomputer-github-match
+  cancel-in-progress: false
+
+jobs:
+  pro-step:
+    name: pro-step
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      state_b64: ${{ steps.state.outputs.state_b64 }}
+      position_words: ${{ steps.state.outputs.position_words }}
+      game_ended: ${{ steps.state.outputs.game_ended }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - name: Run the existing deterministic Pro for exactly one move
+        env:
+          STATE_B64: ${{ github.event_name == 'workflow_dispatch' && inputs.state_b64 || '' }}
+          PRO_STEP_OUTPUT: /tmp/pro-step-result.json
+        run: |
+          set -euo pipefail
+          node scripts/title-supercomputer-pro-step.mjs
+          test -s /tmp/pro-step-result.json
+          cat /tmp/pro-step-result.json
+      - name: Export match state
+        id: state
+        run: |
+          set -euo pipefail
+          echo "state_b64=$(jq -r '.stateB64' /tmp/pro-step-result.json)" >> "$GITHUB_OUTPUT"
+          echo "position_words=$(jq -c '.positionWords' /tmp/pro-step-result.json)" >> "$GITHUB_OUTPUT"
+          echo "game_ended=$(jq -r '.gameEnded' /tmp/pro-step-result.json)" >> "$GITHUB_OUTPUT"
+
+  specialist:
+    name: specialist-${{ matrix.id }}
+    needs: pro-step
+    if: ${{ needs.pro-step.outputs.game_ended != 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Run one specialist on its own GitHub runner
+        env:
+          SPECIALIST_ID: ${{ matrix.id }}
+          POSITION_WORDS: ${{ needs.pro-step.outputs.position_words }}
+          SPECIALIST_OUTPUT: /tmp/specialist-${{ format('{0:00}', matrix.id) }}.json
+        run: |
+          set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+          node scripts/title-supercomputer-github-specialist.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: specialist-${{ matrix.id }}
+          path: /tmp/specialist-*.json
+          if-no-files-found: error
+          retention-days: 1
+
+  convergence:
+    name: convergence
+    needs: [pro-step, specialist]
+    if: ${{ needs.pro-step.outputs.game_ended != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: specialist-*
+          path: /tmp/specialists
+          merge-multiple: true
+      - run: npm ci
+      - name: Converge as one four-core / eight-thread Title engine
+        env:
+          POSITION_WORDS: ${{ needs.pro-step.outputs.position_words }}
+          SPECIALISTS_DIR: /tmp/specialists
+          CONVERGENCE_OUTPUT: /tmp/convergence-result.json
+        run: |
+          set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+          node scripts/title-supercomputer-github-converge.mjs
+          test -s /tmp/convergence-result.json
+      - name: Apply the Title move with the canonical game engine
+        env:
+          STATE_B64: ${{ needs.pro-step.outputs.state_b64 }}
+          TITLE_STEP_OUTPUT: /tmp/title-step-result.json
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/esbuild scripts/title-supercomputer-title-step.ts --bundle --platform=node --format=esm --outfile=/tmp/title-step.mjs
+          export MOVE_CODE="$(jq -r '.convergence.moveCode' /tmp/convergence-result.json)"
+          export SPECIALIST_MAX_MS="$(jq -r '.specialistMaxMs' /tmp/convergence-result.json)"
+          export SPECIALIST_ENVELOPE_MS="$(jq -r '.specialistExecutionEnvelopeMs' /tmp/convergence-result.json)"
+          export SPECIALIST_NODES="$(jq -r '.specialistNodes' /tmp/convergence-result.json)"
+          export CONVERGENCE_NODES="$(jq -r '.convergence.nodes' /tmp/convergence-result.json)"
+          export CONVERGENCE_MS="$(jq -r '.convergence.elapsedMs' /tmp/convergence-result.json)"
+          export CONVERGENCE_SCORE="$(jq -r '.convergence.score' /tmp/convergence-result.json)"
+          export MATE_SHORT_CIRCUITS="$(jq -r '.mateShortCircuits' /tmp/convergence-result.json)"
+          node /tmp/title-step.mjs
+          test -s /tmp/title-step-result.json
+          cat /tmp/title-step-result.json
+      - name: Continue only if the game is still alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NEXT_STATE="$(jq -r '.stateB64' /tmp/title-step-result.json)"
+          GAME_ENDED="$(jq -r '.gameEnded' /tmp/title-step-result.json)"
+          PLY="$(node -e "const s=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));process.stdout.write(String(s.position.ply))" "$NEXT_STATE")"
+          echo "TITLE_ROUND_RESULT:$(cat /tmp/title-step-result.json)"
+          if [ "$GAME_ENDED" = "true" ] || [ "$PLY" -ge 200 ]; then
+            echo "TITLE_MATCH_COMPLETE:gameEnded=$GAME_ENDED ply=$PLY"
+            exit 0
+          fi
+          gh workflow run title-supercomputer-github-runtime.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f state_b64="$NEXT_STATE"
+          echo "TITLE_NEXT_ROUND_DISPATCHED:ply=$PLY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: title-round-${{ github.run_id }}
+          path: |
+            /tmp/convergence-result.json
+            /tmp/title-step-result.json
+          if-no-files-found: warn
+          retention-days: 1
