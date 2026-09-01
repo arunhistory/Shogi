@@ -1,0 +1,94 @@
+name: title-supercomputer-github-move
+run-name: title-move-${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      position_words:
+        description: 'Encoded 97-word SuperTitle position.'
+        required: true
+        type: string
+      request_id:
+        description: 'SHA-256 request identity supplied by the controller.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  specialist:
+    name: specialist-${{ matrix.id }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Validate request identity
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUEST_ID" =~ ^[a-f0-9]{64}$ ]]
+      - name: Run one specialist on its own GitHub runner
+        env:
+          SPECIALIST_ID: ${{ matrix.id }}
+          POSITION_WORDS: ${{ inputs.position_words }}
+        run: |
+          set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+          node scripts/title-supercomputer-github-specialist.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: specialist-${{ matrix.id }}
+          path: /tmp/specialist-*.json
+          if-no-files-found: error
+          retention-days: 1
+
+  convergence:
+    name: convergence
+    needs: specialist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: specialist-*
+          path: /tmp/specialists
+          merge-multiple: true
+      - name: Converge as one four-core / eight-thread Title engine
+        env:
+          POSITION_WORDS: ${{ inputs.position_words }}
+          SPECIALISTS_DIR: /tmp/specialists
+          CONVERGENCE_OUTPUT: /tmp/convergence-result.json
+        run: |
+          set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+          node scripts/title-supercomputer-github-converge.mjs
+          test -s /tmp/convergence-result.json
+      - name: Publish controller-readable result
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          RESULT="$(jq -c --arg requestId "$REQUEST_ID" '{requestId:$requestId,moveCode:.convergence.moveCode,score:.convergence.score,nodes:.convergence.nodes,elapsedMs:.convergence.elapsedMs,specialistMaxMs:.specialistMaxMs,specialistAvgMs:.specialistAvgMs,specialistNodes:.specialistNodes,mateShortCircuits:.mateShortCircuits,computePathMs:.computePathMs}' /tmp/convergence-result.json)"
+          echo "TITLE_GITHUB_MOVE_RESULT:$RESULT"
