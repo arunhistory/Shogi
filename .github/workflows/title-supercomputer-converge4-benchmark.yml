@@ -46,7 +46,7 @@ jobs:
           grep -q 'sharedAlpha' /tmp/super-converge4.cpp
           grep -q 'alphaSnapshot' /tmp/super-converge4.cpp
           grep -q 'specialist==0' /tmp/super-converge4.cpp
-          if grep -q 'scores\[kMaxMoves\]' /tmp/super-converge4.cpp; then echo 'independent-root-score-array still present'; exit 1; fi
+          if grep -q 'constexpr int kUnset' /tmp/super-converge4.cpp; then echo 'obsolete independent convergence implementation still present'; exit 1; fi
 
       - name: Build matched single-thread baseline
         run: |
