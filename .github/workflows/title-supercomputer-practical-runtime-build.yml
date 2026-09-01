@@ -1,0 +1,83 @@
+name: title-supercomputer-practical-runtime-build
+
+on:
+  push:
+    branches:
+      - 'deployment/title-supercomputer-practical-20260901'
+    paths:
+      - '.github/workflows/title-supercomputer-practical-runtime-build.yml'
+      - 'scripts/temp-patch-title-super-practical.mjs'
+      - 'scripts/temp-patch-title-super-converge4.mjs'
+      - 'scripts/temp-patch-title-super-fastpath.mjs'
+      - 'scripts/temp-patch-title-super-metrics.mjs'
+      - 'scripts/temp-patch-title-super-inplace.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+          test "$(nproc)" -ge 4
+      - name: Generate combined CPU source
+        run: |
+          set -euo pipefail
+          node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
+          node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-inplace.cpp
+          node scripts/temp-patch-title-super-converge4.mjs /tmp/super-inplace.cpp /tmp/super-engine.cpp
+          node scripts/temp-patch-title-super-practical.mjs /tmp/super-engine.cpp /tmp/super-practical.cpp
+          grep -q 'if(specialist==12)return super_search_dual12' /tmp/super-practical.cpp
+          grep -q 'if(specialist==0)return super_search_convergence_engine' /tmp/super-practical.cpp
+      - name: Build dual12 runtime
+        run: |
+          set -euo pipefail
+          mkdir -p runtime
+          em++ /tmp/super-practical.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -DSUPER_ENGINE_THREADS=2 \
+            -pthread -s WASM=1 -s ENVIRONMENT=node -s MODULARIZE=1 \
+            -s EXPORT_NAME=createTitleDual12 -s PTHREAD_POOL_SIZE=1 \
+            -s ALLOW_MEMORY_GROWTH=0 -s INITIAL_MEMORY=134217728 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_search_specialist","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
+            --no-entry -o runtime/title-dual12.js
+          wasm-validate --enable-threads runtime/title-dual12.wasm
+          test -s runtime/title-dual12.worker.js
+      - name: Build convergence runtime
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-practical.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -DSUPER_ENGINE_THREADS=8 \
+            -pthread -s WASM=1 -s ENVIRONMENT=node -s MODULARIZE=1 \
+            -s EXPORT_NAME=createTitleConvergence -s PTHREAD_POOL_SIZE=7 \
+            -s ALLOW_MEMORY_GROWTH=0 -s INITIAL_MEMORY=134217728 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_converge","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
+            --no-entry -o runtime/title-convergence.js
+          wasm-validate --enable-threads runtime/title-convergence.wasm
+          test -s runtime/title-convergence.worker.js
+      - name: Commit reproducible runtimes
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add runtime/title-dual12.js runtime/title-dual12.wasm runtime/title-dual12.worker.js \
+                  runtime/title-convergence.js runtime/title-convergence.wasm runtime/title-convergence.worker.js
+          if git diff --cached --quiet; then
+            echo 'RUNTIME_UNCHANGED'
+            exit 0
+          fi
+          git commit -m 'build: practical title cpu runtimes'
+          git push origin HEAD:deployment/title-supercomputer-practical-20260901
