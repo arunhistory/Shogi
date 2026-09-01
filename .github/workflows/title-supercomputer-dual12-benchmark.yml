@@ -101,7 +101,12 @@ jobs:
 
           const require=createRequire(import.meta.url);
           const createDual12=require('/tmp/dual12.js');
-          const dual=await createDual12({locateFile:(path)=>'/tmp/'+path});
+          const dualWasm=await readFile('/tmp/dual12.wasm');
+          const dual=await createDual12({
+            wasmBinary:dualWasm,
+            locateFile:(path)=>'/tmp/'+path,
+            mainScriptUrlOrBlob:'/tmp/dual12.js',
+          });
           const dualPtr=dual._shogi_input_buffer();
           dual.HEAP32.fill(0,dualPtr>>2,(dualPtr>>2)+97);
           dual.HEAP32.set(Int32Array.from(position),dualPtr>>2);
