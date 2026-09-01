@@ -40,6 +40,7 @@ jobs:
           node scripts/temp-patch-title-super-dual12.mjs /tmp/super-single.cpp /tmp/super-dual12.cpp
           grep -q 'std::thread helper' /tmp/super-dual12.cpp
           grep -q 'specialist==12' /tmp/super-dual12.cpp
+          grep -q 'phase.store' /tmp/super-dual12.cpp
 
       - name: Build matched single-CPU baseline
         run: |
@@ -67,11 +68,11 @@ jobs:
             -s ENVIRONMENT=node \
             -s MODULARIZE=1 \
             -s EXPORT_NAME=createDual12 \
-            -s PTHREAD_POOL_SIZE=12 \
+            -s PTHREAD_POOL_SIZE=1 \
             -s ALLOW_MEMORY_GROWTH=0 \
             -s INITIAL_MEMORY=67108864 \
             -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_search_specialist","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
-            -s EXPORTED_RUNTIME_METHODS='["HEAP32"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
             --no-entry \
             -o /tmp/dual12.js
           wasm-validate --enable-threads /tmp/dual12.wasm
@@ -80,6 +81,7 @@ jobs:
 
       - name: Compare exact 5M Specialist 12 calculation
         run: |
+          set -euo pipefail
           cat > /tmp/dual12-benchmark.mjs <<'NODE'
           import {readFile} from 'node:fs/promises';
           import {createRequire} from 'node:module';
@@ -125,12 +127,15 @@ jobs:
             const ms=performance.now()-t;
             return {move,score:Number(dual._shogi_super_best_score()),nodes:Number(dual._shogi_super_nodes_searched()),ms};
           }
+          const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
           const single=[];const dualRuns=[];
           single.push(oneSingle());
           dualRuns.push(oneDual());
+          await tick();
           single.push(oneSingle());
           dualRuns.push(oneDual());
+          await tick();
           for(const r of [...single,...dualRuns])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
 
           const avg=a=>a.reduce((n,x)=>n+x.ms,0)/a.length;
@@ -138,7 +143,7 @@ jobs:
           const result={
             specialist:12,
             nodeBudget:budget,
-            cpuModel:'single vs main+1 pthread worker',
+            cpuModel:'main+1 persistent pthread helper',
             single,
             dual:dualRuns,
             singleAvgMs:singleAvg,
@@ -150,8 +155,9 @@ jobs:
             selftest:{single:singleSelftest,dual:dualSelftest},
           };
           console.log('DUAL12_RESULT:'+JSON.stringify(result));
+          dual.PThread.terminateAllThreads();
           NODE
-          timeout 180s node /tmp/dual12-benchmark.mjs | tee /tmp/dual12-result.log
+          timeout 120s node /tmp/dual12-benchmark.mjs | tee /tmp/dual12-result.log
           grep -q '^DUAL12_RESULT:' /tmp/dual12-result.log
 
       - name: Upload result
