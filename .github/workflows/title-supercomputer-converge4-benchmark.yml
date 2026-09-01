@@ -1,0 +1,174 @@
+name: title-supercomputer-converge4-benchmark
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - 'scripts/temp-patch-title-super-converge4.mjs'
+      - '.github/workflows/title-supercomputer-converge4-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_BUDGET: '5000000'
+      POSITION_WORDS: '[1397245769,-1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,1,0,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'
+      CANDIDATES: '[525,3105,1293,2460,526,526,655,3105,395,3363,3363,526,3363,3363,1293,526,526,525,3363,3363]'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+
+      - name: Install Emscripten toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+          em++ --version | head -n 1
+
+      - name: Reconstruct current optimized source and four-CPU convergence variant
+        run: |
+          set -euo pipefail
+          node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
+          node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-single.cpp
+          node scripts/temp-patch-title-super-converge4.mjs /tmp/super-single.cpp /tmp/super-converge4.cpp
+          grep -q 'std::thread helper1' /tmp/super-converge4.cpp
+          grep -q 'helper2' /tmp/super-converge4.cpp
+          grep -q 'helper3' /tmp/super-converge4.cpp
+          grep -q 'specialist==0' /tmp/super-converge4.cpp
+
+      - name: Build matched single-CPU baseline
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-single.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -s WASM=1 -s STANDALONE_WASM=1 --no-entry \
+            -Wl,--export=shogi_input_buffer \
+            -Wl,--export=shogi_input_capacity \
+            -Wl,--export=shogi_super_converge \
+            -Wl,--export=shogi_super_best_score \
+            -Wl,--export=shogi_super_nodes_searched \
+            -Wl,--export=shogi_super_inplace_selftest \
+            -o /tmp/single.raw.wasm
+          wasm-opt -O4 /tmp/single.raw.wasm -o /tmp/single.wasm
+          wasm-validate /tmp/single.wasm
+
+      - name: Build four-CPU coupled convergence
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-converge4.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -pthread \
+            -s WASM=1 \
+            -s ENVIRONMENT=node \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME=createConverge4 \
+            -s PTHREAD_POOL_SIZE=3 \
+            -s ALLOW_MEMORY_GROWTH=0 \
+            -s INITIAL_MEMORY=67108864 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_converge","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
+            --no-entry \
+            -o /tmp/converge4.js
+          wasm-validate --enable-threads /tmp/converge4.wasm
+          ls -lh /tmp/converge4.js /tmp/converge4.wasm /tmp/converge4.worker.js
+
+      - name: Compare exact 5M convergence calculation
+        run: |
+          set -euo pipefail
+          cat > /tmp/converge4-benchmark.mjs <<'NODE'
+          import {readFile} from 'node:fs/promises';
+          import {createRequire} from 'node:module';
+          import {performance} from 'node:perf_hooks';
+
+          const position=JSON.parse(process.env.POSITION_WORDS);
+          const candidates=JSON.parse(process.env.CANDIDATES);
+          const budget=Number(process.env.NODE_BUDGET);
+          if(position.length!==97)throw new Error('POSITION_WORDS_INVALID');
+          if(candidates.length!==20)throw new Error('CANDIDATE_COUNT_INVALID');
+          if(budget!==5_000_000)throw new Error('NODE_BUDGET_CHANGED');
+          const inputWords=[...position,...candidates];
+
+          const singleBytes=await readFile('/tmp/single.wasm');
+          const singleInstance=await WebAssembly.instantiate(singleBytes,{});
+          const s=singleInstance.instance.exports;
+          if(typeof s._initialize==='function')s._initialize();
+          if(Number(s.shogi_input_capacity())<inputWords.length)throw new Error('SINGLE_INPUT_CAPACITY');
+          const singleInput=new Int32Array(s.memory.buffer,s.shogi_input_buffer(),s.shogi_input_capacity());
+          singleInput.fill(0,0,inputWords.length);singleInput.set(Int32Array.from(inputWords),0);
+          const singleSelftest=Number(s.shogi_super_inplace_selftest(97));
+          if(singleSelftest<=0)throw new Error('SINGLE_SELFTEST_FAILED:'+singleSelftest);
+
+          const require=createRequire(import.meta.url);
+          const createConverge4=require('/tmp/converge4.js');
+          const quadWasm=await readFile('/tmp/converge4.wasm');
+          const quad=await createConverge4({
+            wasmBinary:quadWasm,
+            locateFile:(path)=>'/tmp/'+path,
+            mainScriptUrlOrBlob:'/tmp/converge4.js',
+          });
+          if(Number(quad._shogi_input_capacity())<inputWords.length)throw new Error('QUAD_INPUT_CAPACITY');
+          const quadPtr=quad._shogi_input_buffer();
+          quad.HEAP32.fill(0,quadPtr>>2,(quadPtr>>2)+inputWords.length);
+          quad.HEAP32.set(Int32Array.from(inputWords),quadPtr>>2);
+          const quadSelftest=Number(quad._shogi_super_inplace_selftest(97));
+          if(quadSelftest<=0)throw new Error('QUAD_SELFTEST_FAILED:'+quadSelftest);
+
+          function oneSingle(){
+            const t=performance.now();
+            const move=Number(s.shogi_super_converge(97,20,14,budget));
+            const ms=performance.now()-t;
+            return {move,score:Number(s.shogi_super_best_score()),nodes:Number(s.shogi_super_nodes_searched()),ms};
+          }
+          function oneQuad(){
+            const t=performance.now();
+            const move=Number(quad._shogi_super_converge(97,20,14,budget));
+            const ms=performance.now()-t;
+            return {move,score:Number(quad._shogi_super_best_score()),nodes:Number(quad._shogi_super_nodes_searched()),ms};
+          }
+
+          const single=[];const quadRuns=[];
+          single.push(oneSingle());
+          quadRuns.push(oneQuad());
+          await new Promise(resolve=>setImmediate(resolve));
+          single.push(oneSingle());
+          quadRuns.push(oneQuad());
+          await new Promise(resolve=>setImmediate(resolve));
+          for(const r of [...single,...quadRuns])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
+
+          const avg=a=>a.reduce((n,x)=>n+x.ms,0)/a.length;
+          const singleAvg=avg(single),quadAvg=avg(quadRuns);
+          const result={
+            nodeBudget:budget,
+            candidateCount:candidates.length,
+            cpuModel:'main+3 persistent pthread helpers as one convergence unit',
+            single,
+            quad:quadRuns,
+            singleAvgMs:singleAvg,
+            quadAvgMs:quadAvg,
+            speedup:singleAvg/quadAvg,
+            moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,
+            moveStableQuad:quadRuns[0].move===quadRuns[1].move&&quadRuns[0].score===quadRuns[1].score,
+            sameFirstDecision:single[0].move===quadRuns[0].move&&single[0].score===quadRuns[0].score,
+            selftest:{single:singleSelftest,quad:quadSelftest},
+          };
+          console.log('CONVERGE4_RESULT:'+JSON.stringify(result));
+          quad.PThread.terminateAllThreads();
+          NODE
+          timeout 120s node /tmp/converge4-benchmark.mjs | tee /tmp/converge4-result.log
+          grep -q '^CONVERGE4_RESULT:' /tmp/converge4-result.log
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: converge4-result
+          path: /tmp/converge4-result.log
+          retention-days: 1
