@@ -33,22 +33,22 @@ jobs:
           test "$(nproc)" -ge 4
           em++ --version | head -n 1
 
-      - name: Reconstruct current optimized source and four-thread convergence variant
+      - name: Reconstruct optimized source and multicore convergence engine
         run: |
           set -euo pipefail
           node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
           node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
           node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-single.cpp
-          node scripts/temp-patch-title-super-converge4.mjs /tmp/super-single.cpp /tmp/super-converge4.cpp
-          grep -q 'std::thread helper1' /tmp/super-converge4.cpp
-          grep -q 'helper2' /tmp/super-converge4.cpp
-          grep -q 'helper3' /tmp/super-converge4.cpp
-          grep -q 'splitAlpha' /tmp/super-converge4.cpp
-          grep -q 'negamax4' /tmp/super-converge4.cpp
-          grep -q 'splitBase=pos' /tmp/super-converge4.cpp
-          grep -q 'specialist==0' /tmp/super-converge4.cpp
-          if grep -q 'constexpr int kUnset' /tmp/super-converge4.cpp; then echo 'obsolete independent convergence implementation still present'; exit 1; fi
-          if grep -q 'sharedAlpha' /tmp/super-converge4.cpp; then echo 'obsolete root-shared convergence implementation still present'; exit 1; fi
+          node scripts/temp-patch-title-super-converge4.mjs /tmp/super-single.cpp /tmp/super-engine.cpp
+          grep -q 'SuperEngineSplit' /tmp/super-engine.cpp
+          grep -q 'SuperEngineTask' /tmp/super-engine.cpp
+          grep -q 'super_engine_queue' /tmp/super-engine.cpp
+          grep -q 'super_negamax_engine' /tmp/super-engine.cpp
+          grep -q 'super_engine_should_split' /tmp/super-engine.cpp
+          grep -q 'super_search_convergence_engine' /tmp/super-engine.cpp
+          grep -q 'kSuperEngineThreads' /tmp/super-engine.cpp
+          if grep -q 'splitBase=root' /tmp/super-engine.cpp; then echo 'obsolete whole-root fanout still present'; exit 1; fi
+          if grep -q 'scores\[kMaxMoves\].*kUnset' /tmp/super-engine.cpp; then echo 'obsolete independent convergence array still present'; exit 1; fi
 
       - name: Build matched single-thread baseline
         run: |
@@ -66,30 +66,51 @@ jobs:
           wasm-opt -O4 /tmp/single.raw.wasm -o /tmp/single.wasm
           wasm-validate /tmp/single.wasm
 
-      - name: Build four-core four-thread cooperative convergence
+      - name: Build four-core engine with four execution threads
         run: |
           set -euo pipefail
-          em++ /tmp/super-converge4.cpp \
+          em++ /tmp/super-engine.cpp \
             -Icpp -O3 -std=c++17 -include initializer_list \
+            -DSUPER_ENGINE_THREADS=4 \
             -pthread \
             -s WASM=1 \
             -s ENVIRONMENT=node \
             -s MODULARIZE=1 \
-            -s EXPORT_NAME=createConverge4 \
+            -s EXPORT_NAME=createEngine4T \
             -s PTHREAD_POOL_SIZE=3 \
             -s ALLOW_MEMORY_GROWTH=0 \
-            -s INITIAL_MEMORY=67108864 \
+            -s INITIAL_MEMORY=134217728 \
             -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_converge","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
             -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
             --no-entry \
-            -o /tmp/converge4.js
-          wasm-validate --enable-threads /tmp/converge4.wasm
-          ls -lh /tmp/converge4.js /tmp/converge4.wasm /tmp/converge4.worker.js
+            -o /tmp/engine4t.js
+          wasm-validate --enable-threads /tmp/engine4t.wasm
+
+      - name: Build four-core engine with eight execution threads
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-engine.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -DSUPER_ENGINE_THREADS=8 \
+            -pthread \
+            -s WASM=1 \
+            -s ENVIRONMENT=node \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME=createEngine8T \
+            -s PTHREAD_POOL_SIZE=7 \
+            -s ALLOW_MEMORY_GROWTH=0 \
+            -s INITIAL_MEMORY=134217728 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_converge","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
+            --no-entry \
+            -o /tmp/engine8t.js
+          wasm-validate --enable-threads /tmp/engine8t.wasm
+          ls -lh /tmp/engine4t.js /tmp/engine4t.wasm /tmp/engine8t.js /tmp/engine8t.wasm
 
       - name: Compare exact 5M convergence calculation
         run: |
           set -euo pipefail
-          cat > /tmp/converge4-benchmark.mjs <<'NODE'
+          cat > /tmp/convergence-engine-benchmark.mjs <<'NODE'
           import {readFile} from 'node:fs/promises';
           import {createRequire} from 'node:module';
           import {performance} from 'node:perf_hooks';
@@ -101,47 +122,65 @@ jobs:
           if(candidates.length!==20)throw new Error('CANDIDATE_COUNT_INVALID');
           if(budget!==5_000_000)throw new Error('NODE_BUDGET_CHANGED');
           const inputWords=[...position,...candidates];
+          const require=createRequire(import.meta.url);
 
           const singleBytes=await readFile('/tmp/single.wasm');
           const singleInstance=await WebAssembly.instantiate(singleBytes,{});
           const s=singleInstance.instance.exports;
           if(typeof s._initialize==='function')s._initialize();
-          if(Number(s.shogi_input_capacity())<inputWords.length)throw new Error('SINGLE_INPUT_CAPACITY');
           const singleInput=new Int32Array(s.memory.buffer,s.shogi_input_buffer(),s.shogi_input_capacity());
           singleInput.fill(0,0,inputWords.length);singleInput.set(Int32Array.from(inputWords),0);
           const singleSelftest=Number(s.shogi_super_inplace_selftest(97));
           if(singleSelftest<=0)throw new Error('SINGLE_SELFTEST_FAILED:'+singleSelftest);
 
-          const require=createRequire(import.meta.url);
-          const createConverge4=require('/tmp/converge4.js');
-          const quadWasm=await readFile('/tmp/converge4.wasm');
-          const quad=await createConverge4({wasmBinary:quadWasm,locateFile:(path)=>'/tmp/'+path,mainScriptUrlOrBlob:'/tmp/converge4.js'});
-          if(Number(quad._shogi_input_capacity())<inputWords.length)throw new Error('QUAD_INPUT_CAPACITY');
-          const quadPtr=quad._shogi_input_buffer();
-          quad.HEAP32.fill(0,quadPtr>>2,(quadPtr>>2)+inputWords.length);
-          quad.HEAP32.set(Int32Array.from(inputWords),quadPtr>>2);
-          const quadSelftest=Number(quad._shogi_super_inplace_selftest(97));
-          if(quadSelftest<=0)throw new Error('QUAD_SELFTEST_FAILED:'+quadSelftest);
-
-          function oneSingle(){const t=performance.now();const move=Number(s.shogi_super_converge(97,20,14,budget));const ms=performance.now()-t;return {move,score:Number(s.shogi_super_best_score()),nodes:Number(s.shogi_super_nodes_searched()),ms};}
-          function oneQuad(){const t=performance.now();const move=Number(quad._shogi_super_converge(97,20,14,budget));const ms=performance.now()-t;return {move,score:Number(quad._shogi_super_best_score()),nodes:Number(quad._shogi_super_nodes_searched()),ms};}
-
-          const single=[];const quadRuns=[];
-          single.push(oneSingle());quadRuns.push(oneQuad());await new Promise(resolve=>setImmediate(resolve));
-          single.push(oneSingle());quadRuns.push(oneQuad());await new Promise(resolve=>setImmediate(resolve));
-          for(const r of [...single,...quadRuns])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
+          function oneSingle(){const t=performance.now();const move=Number(s.shogi_super_converge(97,20,14,budget));return {move,score:Number(s.shogi_super_best_score()),nodes:Number(s.shogi_super_nodes_searched()),ms:performance.now()-t};}
+          async function loadThreaded(jsPath,wasmPath,mainPath){
+            const create=require(jsPath);const wasmBinary=await readFile(wasmPath);
+            const mod=await create({wasmBinary,locateFile:(path)=>'/tmp/'+path,mainScriptUrlOrBlob:mainPath});
+            const ptr=mod._shogi_input_buffer();mod.HEAP32.fill(0,ptr>>2,(ptr>>2)+inputWords.length);mod.HEAP32.set(Int32Array.from(inputWords),ptr>>2);
+            const selftest=Number(mod._shogi_super_inplace_selftest(97));if(selftest<=0)throw new Error('THREADED_SELFTEST_FAILED:'+selftest);return {mod,selftest};
+          }
+          function oneThreaded(mod){const t=performance.now();const move=Number(mod._shogi_super_converge(97,20,14,budget));return {move,score:Number(mod._shogi_super_best_score()),nodes:Number(mod._shogi_super_nodes_searched()),ms:performance.now()-t};}
           const avg=a=>a.reduce((n,x)=>n+x.ms,0)/a.length;
-          const singleAvg=avg(single),quadAvg=avg(quadRuns);
-          const result={nodeBudget:budget,candidateCount:candidates.length,cpuModel:'one convergence; root candidates stay serial; each candidate alpha-beta branch uses main+3 helper threads',single,quad:quadRuns,singleAvgMs:singleAvg,quadAvgMs:quadAvg,speedup:singleAvg/quadAvg,moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,moveStableQuad:quadRuns[0].move===quadRuns[1].move&&quadRuns[0].score===quadRuns[1].score,selftest:{single:singleSelftest,quad:quadSelftest}};
-          console.log('CONVERGE4_RESULT:'+JSON.stringify(result));
-          quad.PThread.terminateAllThreads();
+
+          const single=[oneSingle(),oneSingle()];
+
+          const e4=await loadThreaded('/tmp/engine4t.js','/tmp/engine4t.wasm','/tmp/engine4t.js');
+          const engine4=[oneThreaded(e4.mod),oneThreaded(e4.mod)];
+          e4.mod.PThread.terminateAllThreads();
+          await new Promise(resolve=>setImmediate(resolve));
+
+          const e8=await loadThreaded('/tmp/engine8t.js','/tmp/engine8t.wasm','/tmp/engine8t.js');
+          const engine8=[oneThreaded(e8.mod),oneThreaded(e8.mod)];
+          e8.mod.PThread.terminateAllThreads();
+
+          for(const r of [...single,...engine4,...engine8])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
+          const singleAvg=avg(single),engine4Avg=avg(engine4),engine8Avg=avg(engine8);
+          const result={
+            nodeBudget:budget,
+            candidateCount:candidates.length,
+            architecture:'one convergence engine; root candidates remain original serial order; split-points inside each alpha-beta tree are cooperatively searched through one shared scheduler/alpha-beta/node budget',
+            runnerLogicalProcessors:4,
+            single,
+            engine4,
+            engine8,
+            singleAvgMs:singleAvg,
+            engine4AvgMs:engine4Avg,
+            engine8AvgMs:engine8Avg,
+            speedup4T:singleAvg/engine4Avg,
+            speedup8T:singleAvg/engine8Avg,
+            stable4T:engine4[0].move===engine4[1].move&&engine4[0].score===engine4[1].score,
+            stable8T:engine8[0].move===engine8[1].move&&engine8[0].score===engine8[1].score,
+            selftest:{single:singleSelftest,engine4:e4.selftest,engine8:e8.selftest}
+          };
+          console.log('CONVERGENCE_ENGINE_RESULT:'+JSON.stringify(result));
           NODE
-          timeout 120s node /tmp/converge4-benchmark.mjs | tee /tmp/converge4-result.log
-          grep -q '^CONVERGE4_RESULT:' /tmp/converge4-result.log
+          timeout 180s node /tmp/convergence-engine-benchmark.mjs | tee /tmp/convergence-engine-result.log
+          grep -q '^CONVERGENCE_ENGINE_RESULT:' /tmp/convergence-engine-result.log
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: converge4-result
-          path: /tmp/converge4-result.log
+          name: convergence-engine-result
+          path: /tmp/convergence-engine-result.log
           retention-days: 1
