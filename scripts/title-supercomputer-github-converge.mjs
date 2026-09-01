@@ -21,7 +21,11 @@ await copyFile('runtime/title-convergence.wasm','/tmp/title-convergence.wasm');
 await copyFile('runtime/title-convergence.worker.js','/tmp/title-convergence.worker.js');
 const require=createRequire(import.meta.url);
 const createTitleConvergence=require('/tmp/title-convergence.cjs');
-const module=await createTitleConvergence();
+const wasmBinary=await readFile('/tmp/title-convergence.wasm');
+const module=await createTitleConvergence({
+  wasmBinary,
+  locateFile:path=>`/tmp/${path}`,
+});
 let convergence;
 try{
   const pointer=module._shogi_input_buffer();
