@@ -1,0 +1,101 @@
+name: title-supercomputer-practical-validation
+
+on:
+  push:
+    branches:
+      - 'deployment/title-supercomputer-practical-20260901'
+    paths:
+      - 'scripts/temp-patch-title-super-practical.mjs'
+      - '.github/workflows/title-supercomputer-practical-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_BUDGET: '5000000'
+      POSITION_WORDS: '[1397245769,-1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,1,0,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'
+      CANDIDATES: '[525,3105,1293,2460,526,526,655,3105,395,3363,3363,526,3363,3363,1293,526,526,525,3363,3363]'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+
+      - name: Install Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+
+      - name: Generate combined practical CPU source
+        run: |
+          set -euo pipefail
+          node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
+          node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-inplace.cpp
+          node scripts/temp-patch-title-super-converge4.mjs /tmp/super-inplace.cpp /tmp/super-engine.cpp
+          node scripts/temp-patch-title-super-practical.mjs /tmp/super-engine.cpp /tmp/super-practical.cpp
+          grep -q 'super_search_dual12' /tmp/super-practical.cpp
+          grep -q 'super_search_convergence_engine' /tmp/super-practical.cpp
+          grep -q 'if(specialist==12)return super_search_dual12' /tmp/super-practical.cpp
+          grep -q 'if(specialist==0)return super_search_convergence_engine' /tmp/super-practical.cpp
+
+      - name: Build practical 8-thread CPU
+        run: |
+          set -euo pipefail
+          em++ /tmp/super-practical.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -DSUPER_ENGINE_THREADS=8 \
+            -pthread \
+            -s WASM=1 \
+            -s ENVIRONMENT=node \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME=createTitlePractical \
+            -s PTHREAD_POOL_SIZE=7 \
+            -s ALLOW_MEMORY_GROWTH=0 \
+            -s INITIAL_MEMORY=134217728 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_search_specialist","_shogi_super_converge","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
+            --no-entry \
+            -o /tmp/title-practical.js
+          wasm-validate --enable-threads /tmp/title-practical.wasm
+          test -s /tmp/title-practical.worker.js
+
+      - name: Validate specialist 12 and convergence at exact 5M
+        run: |
+          set -euo pipefail
+          cat > /tmp/validate-practical.mjs <<'NODE'
+          import {readFile} from 'node:fs/promises';
+          import {createRequire} from 'node:module';
+          import {performance} from 'node:perf_hooks';
+          const position=JSON.parse(process.env.POSITION_WORDS),candidates=JSON.parse(process.env.CANDIDATES),budget=Number(process.env.NODE_BUDGET);
+          if(position.length!==97||candidates.length!==20||budget!==5_000_000)throw new Error('INPUT_INVALID');
+          const require=createRequire(import.meta.url),create=require('/tmp/title-practical.js'),wasmBinary=await readFile('/tmp/title-practical.wasm');
+          const mod=await create({wasmBinary,locateFile:p=>'/tmp/'+p,mainScriptUrlOrBlob:'/tmp/title-practical.js'});
+          const ptr=mod._shogi_input_buffer();
+          const write=(extra=[])=>{const words=[...position,...extra];mod.HEAP32.fill(0,ptr>>2,(ptr>>2)+words.length);mod.HEAP32.set(Int32Array.from(words),ptr>>2);};
+          const run12=()=>{write();const t=performance.now();const move=Number(mod._shogi_super_search_specialist(97,12,12,budget));return{move,score:Number(mod._shogi_super_best_score()),nodes:Number(mod._shogi_super_nodes_searched()),ms:performance.now()-t};};
+          const runConv=()=>{write(candidates);const t=performance.now();const move=Number(mod._shogi_super_converge(97,20,14,budget));return{move,score:Number(mod._shogi_super_best_score()),nodes:Number(mod._shogi_super_nodes_searched()),ms:performance.now()-t};};
+          write();const selftest=Number(mod._shogi_super_inplace_selftest(97));if(selftest<=0)throw new Error('SELFTEST_FAILED:'+selftest);
+          const specialist12=[run12(),run12()],convergence=[runConv(),runConv()];
+          for(const r of [...specialist12,...convergence])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
+          const stable=a=>a[0].move===a[1].move&&a[0].score===a[1].score;
+          if(!stable(specialist12)||!stable(convergence))throw new Error('RESULT_UNSTABLE');
+          const avg=a=>a.reduce((s,x)=>s+x.ms,0)/a.length;
+          console.log('PRACTICAL_CPU_RESULT:'+JSON.stringify({selftest,specialist12,convergence,specialist12AvgMs:avg(specialist12),convergenceAvgMs:avg(convergence)}));
+          mod.PThread.terminateAllThreads();
+          NODE
+          timeout 120s node /tmp/validate-practical.mjs | tee /tmp/practical-result.log
+          grep -q '^PRACTICAL_CPU_RESULT:' /tmp/practical-result.log
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: practical-cpu-result
+          path: /tmp/practical-result.log
+          retention-days: 1
