@@ -9,8 +9,8 @@ const searchToken='int32_t super_search(const Position&root,int specialist,int m
 const start=source.indexOf(searchToken);
 assert(start>=0,'PRACTICAL_SEARCH_START_MISSING');
 const externAnchor='}\n\nextern "C" {';
-const searchEnd=source.indexOf(externAnchor,start);
-assert(searchEnd>start,'PRACTICAL_SEARCH_END_MISSING');
+const namespaceClose=source.indexOf(externAnchor,start);
+assert(namespaceClose>start,'PRACTICAL_SEARCH_END_MISSING');
 
 const replacement=`int32_t super_search_dual12(const Position&root,int maxDepth,int nodeLimit,const int32_t*restrictMoves,int restrictCount){
   MoveList all;super_generate_legal(root,all);if(all.count==0)return-1;
@@ -57,7 +57,9 @@ int32_t super_search(const Position&root,int specialist,int maxDepth,int nodeLim
 }
 `;
 
-source=source.slice(0,start)+replacement+source.slice(searchEnd+1);
+// namespaceClose points at the namespace-closing brace immediately before extern "C".
+// Preserve it; only replace the previous super_search body/definition.
+source=source.slice(0,start)+replacement+source.slice(namespaceClose);
 assert(source.includes('if(specialist==12)return super_search_dual12'),'PRACTICAL_DUAL12_DISPATCH_MISSING');
 assert(source.includes('if(specialist==0)return super_search_convergence_engine'),'PRACTICAL_CONVERGENCE_DISPATCH_MISSING');
 await writeFile(output,source);
