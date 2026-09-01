@@ -1,0 +1,193 @@
+name: title-supercomputer-20way-parallel-benchmark
+
+on:
+  push:
+    branches:
+      - 'experiment/title-supercomputer-v1'
+    paths:
+      - '.github/workflows/title-supercomputer-20way-parallel-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This benchmark intentionally uses all 20 GitHub Free concurrent job slots.
+# It does not modify game logic, node budgets, Supabase, or production resources.
+jobs:
+  specialist:
+    name: specialist-${{ matrix.id }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_BUDGET: '5000000'
+      POSITION_WORDS: '[1397245769,-1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,1,0,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Run one 5M-node specialist independently
+        shell: bash
+        env:
+          SPECIALIST_ID: ${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
+          node --input-type=module <<'NODE'
+          import {readFile,writeFile} from 'node:fs/promises';
+          import {performance} from 'node:perf_hooks';
+
+          const id=Number(process.env.SPECIALIST_ID);
+          const budget=Number(process.env.NODE_BUDGET);
+          const position=JSON.parse(process.env.POSITION_WORDS);
+          if(!Number.isInteger(id)||id<1||id>20)throw new Error('INVALID_SPECIALIST_ID');
+          if(budget!==5_000_000)throw new Error('NODE_BUDGET_CHANGED');
+          if(!Array.isArray(position)||position.length!==97)throw new Error('POSITION_WORDS_INVALID');
+
+          const bytes=await readFile('public/wasm/title_supercomputer.wasm');
+          const module=await WebAssembly.compile(bytes);
+          const instance=await WebAssembly.instantiate(module,{});
+          const w=instance.exports;
+          for(const name of ['memory','shogi_input_buffer','shogi_input_capacity','shogi_super_search_specialist','shogi_super_best_score','shogi_super_nodes_searched']){
+            if(!(name in w))throw new Error('WASM_EXPORT_MISSING:'+name);
+          }
+          const capacity=w.shogi_input_capacity();
+          const pointer=w.shogi_input_buffer();
+          if(capacity<97)throw new Error('WASM_INPUT_CAPACITY');
+          const input=new Int32Array(w.memory.buffer,pointer,capacity);
+          input.fill(0,0,97);
+          input.set(Int32Array.from(position),0);
+
+          const startedEpochMs=Date.now();
+          const started=performance.now();
+          const moveCode=w.shogi_super_search_specialist(97,id,12,budget);
+          const elapsedMs=performance.now()-started;
+          const endedEpochMs=Date.now();
+          if(moveCode<0)throw new Error('NO_LEGAL_MOVE');
+          const result={
+            id,
+            moveCode:Number(moveCode),
+            score:Number(w.shogi_super_best_score()),
+            nodes:Number(w.shogi_super_nodes_searched()),
+            elapsedMs,
+            startedEpochMs,
+            endedEpochMs,
+          };
+          const pad=String(id).padStart(2,'0');
+          await writeFile(`/tmp/specialist-${pad}.json`,JSON.stringify(result));
+          console.log('SPECIALIST_RESULT:'+JSON.stringify(result));
+          NODE
+
+      - name: Upload specialist result
+        uses: actions/upload-artifact@v4
+        with:
+          name: specialist-${{ matrix.id }}
+          path: /tmp/specialist-*.json
+          if-no-files-found: error
+          retention-days: 1
+
+  convergence:
+    name: convergence
+    needs: specialist
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_BUDGET: '5000000'
+      POSITION_WORDS: '[1397245769,-1,-2,-3,-4,-5,-8,-5,-4,-3,-2,0,-7,0,0,0,0,0,-6,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,1,0,1,1,1,1,1,1,0,6,0,0,0,0,0,7,0,2,3,4,5,8,5,4,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: experiment/title-supercomputer-v1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: specialist-*
+          path: /tmp/specialists
+          merge-multiple: true
+
+      - name: Converge the 20 returned results
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUNNER_NPROC:$(nproc)"
+          node --input-type=module <<'NODE'
+          import {readFile,readdir,writeFile} from 'node:fs/promises';
+          import {performance} from 'node:perf_hooks';
+
+          const budget=Number(process.env.NODE_BUDGET);
+          const position=JSON.parse(process.env.POSITION_WORDS);
+          if(budget!==5_000_000)throw new Error('NODE_BUDGET_CHANGED');
+          if(!Array.isArray(position)||position.length!==97)throw new Error('POSITION_WORDS_INVALID');
+
+          const files=(await readdir('/tmp/specialists')).filter(x=>/^specialist-\d\d\.json$/.test(x)).sort();
+          if(files.length!==20)throw new Error('SPECIALIST_RESULT_COUNT:'+files.length);
+          const specialists=[];
+          for(const file of files)specialists.push(JSON.parse(await readFile('/tmp/specialists/'+file,'utf8')));
+          specialists.sort((a,b)=>a.id-b.id);
+          for(let i=0;i<20;i++)if(specialists[i]?.id!==i+1)throw new Error('SPECIALIST_ID_SEQUENCE');
+
+          const bytes=await readFile('public/wasm/title_supercomputer.wasm');
+          const module=await WebAssembly.compile(bytes);
+          const instance=await WebAssembly.instantiate(module,{});
+          const w=instance.exports;
+          for(const name of ['memory','shogi_input_buffer','shogi_input_capacity','shogi_super_converge','shogi_super_best_score','shogi_super_nodes_searched']){
+            if(!(name in w))throw new Error('WASM_EXPORT_MISSING:'+name);
+          }
+          const candidates=specialists.map(x=>Number(x.moveCode));
+          const capacity=w.shogi_input_capacity();
+          const pointer=w.shogi_input_buffer();
+          if(capacity<97+candidates.length)throw new Error('WASM_INPUT_CAPACITY');
+          const input=new Int32Array(w.memory.buffer,pointer,capacity);
+          input.fill(0,0,97+candidates.length);
+          input.set(Int32Array.from(position),0);
+          input.set(Int32Array.from(candidates),97);
+
+          const convergenceStarted=performance.now();
+          const moveCode=w.shogi_super_converge(97,candidates.length,14,budget);
+          const convergenceElapsedMs=performance.now()-convergenceStarted;
+          if(moveCode<0)throw new Error('NO_LEGAL_MOVE');
+
+          const elapsed=specialists.map(x=>Number(x.elapsedMs));
+          const starts=specialists.map(x=>Number(x.startedEpochMs));
+          const ends=specialists.map(x=>Number(x.endedEpochMs));
+          const specialistNodes=specialists.reduce((sum,x)=>sum+Number(x.nodes),0);
+          const result={
+            specialistCount:20,
+            specialistMinMs:Math.min(...elapsed),
+            specialistMaxMs:Math.max(...elapsed),
+            specialistAvgMs:elapsed.reduce((a,b)=>a+b,0)/elapsed.length,
+            specialistExecutionEnvelopeMs:Math.max(...ends)-Math.min(...starts),
+            specialistNodes,
+            candidates,
+            convergence:{
+              moveCode:Number(moveCode),
+              score:Number(w.shogi_super_best_score()),
+              nodes:Number(w.shogi_super_nodes_searched()),
+              elapsedMs:convergenceElapsedMs,
+            },
+            estimatedComputePathMs:Math.max(...elapsed)+convergenceElapsedMs,
+            specialists,
+          };
+          await writeFile('/tmp/parallel-20-result.json',JSON.stringify(result,null,2));
+          console.log('PARALLEL_20_RESULT:'+JSON.stringify(result));
+          NODE
+
+      - name: Upload final benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: parallel-20-result
+          path: /tmp/parallel-20-result.json
+          if-no-files-found: error
+          retention-days: 1
