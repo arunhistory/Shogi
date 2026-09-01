@@ -19,10 +19,9 @@ assert(source.includes(nodeGlobal),'CONVERGE4_NODE_GLOBAL_MISSING');
 source=source.replace(nodeGlobal,`std::atomic<int32_t> g_super_nodes{0};
 inline int32_t super_nodes_now(){return g_super_nodes.load(std::memory_order_relaxed);}
 inline bool super_take_node(){
-  int32_t current=g_super_nodes.load(std::memory_order_relaxed);
-  while(current<g_node_limit){
-    if(g_super_nodes.compare_exchange_weak(current,current+1,std::memory_order_relaxed,std::memory_order_relaxed))return true;
-  }
+  const int32_t claimed=g_super_nodes.fetch_add(1,std::memory_order_relaxed);
+  if(claimed<g_node_limit)return true;
+  g_super_nodes.fetch_sub(1,std::memory_order_relaxed);
   return false;
 }
 `);
