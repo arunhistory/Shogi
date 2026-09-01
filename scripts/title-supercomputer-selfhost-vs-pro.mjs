@@ -51,7 +51,7 @@ const profile=await mkdtemp(join(tmpdir(),'shogi-title-super-selfhost-match-'));
 const tempViteConfig=join(process.cwd(),'.tmp-title-super-vite.config.mjs');
 let dev=null,chrome=null,cdp=null;
 try{
-  await writeFile(tempViteConfig,`import {defineConfig} from 'vite';\nexport default defineConfig({base:'./',build:{target:'es2022',sourcemap:false},server:{proxy:{'/__supertitle':{target:'http://127.0.0.1:9000',changeOrigin:false,rewrite:()=>'/title-supercomputer'}}}});\n`);
+  await writeFile(tempViteConfig,`import {defineConfig} from 'vite';\nexport default defineConfig({base:'./',build:{target:'es2022',sourcemap:false},server:{proxy:{'/__supertitle':{target:'http://127.0.0.1:9000',changeOrigin:true,rewrite:()=>'/title-supercomputer'}}}});\n`);
   dev=spawn(process.platform==='win32'?'npm.cmd':'npm',['run','dev','--','--config',tempViteConfig,'--host',host,'--port',String(devPort),'--strictPort'],{stdio:['ignore','ignore','inherit'],env:{...process.env}});
   await waitForHttp(appUrl);
   chrome=spawn(chromePath,['--headless=new','--disable-dev-shm-usage','--disable-background-networking','--no-first-run','--no-default-browser-check','--no-sandbox','--disable-gpu',`--remote-debugging-address=${host}`,`--remote-debugging-port=${debuggingPort}`,`--user-data-dir=${profile}`,appUrl],{stdio:['ignore','ignore','inherit']});
