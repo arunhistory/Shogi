@@ -67,7 +67,7 @@ jobs:
             -s ENVIRONMENT=node \
             -s MODULARIZE=1 \
             -s EXPORT_NAME=createDual12 \
-            -s PTHREAD_POOL_SIZE=1 \
+            -s PTHREAD_POOL_SIZE=12 \
             -s ALLOW_MEMORY_GROWTH=0 \
             -s INITIAL_MEMORY=67108864 \
             -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_search_specialist","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
@@ -151,7 +151,7 @@ jobs:
           };
           console.log('DUAL12_RESULT:'+JSON.stringify(result));
           NODE
-          node /tmp/dual12-benchmark.mjs | tee /tmp/dual12-result.log
+          timeout 180s node /tmp/dual12-benchmark.mjs | tee /tmp/dual12-result.log
           grep -q '^DUAL12_RESULT:' /tmp/dual12-result.log
 
       - name: Upload result
