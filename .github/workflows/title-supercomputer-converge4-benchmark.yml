@@ -33,7 +33,7 @@ jobs:
           test "$(nproc)" -ge 4
           em++ --version | head -n 1
 
-      - name: Reconstruct current optimized source and four-CPU convergence variant
+      - name: Reconstruct current optimized source and four-thread convergence variant
         run: |
           set -euo pipefail
           node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
@@ -43,9 +43,12 @@ jobs:
           grep -q 'std::thread helper1' /tmp/super-converge4.cpp
           grep -q 'helper2' /tmp/super-converge4.cpp
           grep -q 'helper3' /tmp/super-converge4.cpp
+          grep -q 'sharedAlpha' /tmp/super-converge4.cpp
+          grep -q 'alphaSnapshot' /tmp/super-converge4.cpp
           grep -q 'specialist==0' /tmp/super-converge4.cpp
+          if grep -q 'scores\[kMaxMoves\]' /tmp/super-converge4.cpp; then echo 'independent-root-score-array still present'; exit 1; fi
 
-      - name: Build matched single-CPU baseline
+      - name: Build matched single-thread baseline
         run: |
           set -euo pipefail
           em++ /tmp/super-single.cpp \
@@ -61,7 +64,7 @@ jobs:
           wasm-opt -O4 /tmp/single.raw.wasm -o /tmp/single.wasm
           wasm-validate /tmp/single.wasm
 
-      - name: Build four-CPU coupled convergence
+      - name: Build four-core four-thread shared convergence
         run: |
           set -euo pipefail
           em++ /tmp/super-converge4.cpp \
@@ -110,11 +113,7 @@ jobs:
           const require=createRequire(import.meta.url);
           const createConverge4=require('/tmp/converge4.js');
           const quadWasm=await readFile('/tmp/converge4.wasm');
-          const quad=await createConverge4({
-            wasmBinary:quadWasm,
-            locateFile:(path)=>'/tmp/'+path,
-            mainScriptUrlOrBlob:'/tmp/converge4.js',
-          });
+          const quad=await createConverge4({wasmBinary:quadWasm,locateFile:(path)=>'/tmp/'+path,mainScriptUrlOrBlob:'/tmp/converge4.js'});
           if(Number(quad._shogi_input_capacity())<inputWords.length)throw new Error('QUAD_INPUT_CAPACITY');
           const quadPtr=quad._shogi_input_buffer();
           quad.HEAP32.fill(0,quadPtr>>2,(quadPtr>>2)+inputWords.length);
@@ -122,44 +121,16 @@ jobs:
           const quadSelftest=Number(quad._shogi_super_inplace_selftest(97));
           if(quadSelftest<=0)throw new Error('QUAD_SELFTEST_FAILED:'+quadSelftest);
 
-          function oneSingle(){
-            const t=performance.now();
-            const move=Number(s.shogi_super_converge(97,20,14,budget));
-            const ms=performance.now()-t;
-            return {move,score:Number(s.shogi_super_best_score()),nodes:Number(s.shogi_super_nodes_searched()),ms};
-          }
-          function oneQuad(){
-            const t=performance.now();
-            const move=Number(quad._shogi_super_converge(97,20,14,budget));
-            const ms=performance.now()-t;
-            return {move,score:Number(quad._shogi_super_best_score()),nodes:Number(quad._shogi_super_nodes_searched()),ms};
-          }
+          function oneSingle(){const t=performance.now();const move=Number(s.shogi_super_converge(97,20,14,budget));const ms=performance.now()-t;return {move,score:Number(s.shogi_super_best_score()),nodes:Number(s.shogi_super_nodes_searched()),ms};}
+          function oneQuad(){const t=performance.now();const move=Number(quad._shogi_super_converge(97,20,14,budget));const ms=performance.now()-t;return {move,score:Number(quad._shogi_super_best_score()),nodes:Number(quad._shogi_super_nodes_searched()),ms};}
 
           const single=[];const quadRuns=[];
-          single.push(oneSingle());
-          quadRuns.push(oneQuad());
-          await new Promise(resolve=>setImmediate(resolve));
-          single.push(oneSingle());
-          quadRuns.push(oneQuad());
-          await new Promise(resolve=>setImmediate(resolve));
+          single.push(oneSingle());quadRuns.push(oneQuad());await new Promise(resolve=>setImmediate(resolve));
+          single.push(oneSingle());quadRuns.push(oneQuad());await new Promise(resolve=>setImmediate(resolve));
           for(const r of [...single,...quadRuns])if(r.nodes!==budget)throw new Error('NODE_COUNT_MISMATCH:'+JSON.stringify(r));
-
           const avg=a=>a.reduce((n,x)=>n+x.ms,0)/a.length;
           const singleAvg=avg(single),quadAvg=avg(quadRuns);
-          const result={
-            nodeBudget:budget,
-            candidateCount:candidates.length,
-            cpuModel:'main+3 persistent pthread helpers as one convergence unit',
-            single,
-            quad:quadRuns,
-            singleAvgMs:singleAvg,
-            quadAvgMs:quadAvg,
-            speedup:singleAvg/quadAvg,
-            moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,
-            moveStableQuad:quadRuns[0].move===quadRuns[1].move&&quadRuns[0].score===quadRuns[1].score,
-            sameFirstDecision:single[0].move===quadRuns[0].move&&single[0].score===quadRuns[0].score,
-            selftest:{single:singleSelftest,quad:quadSelftest},
-          };
+          const result={nodeBudget:budget,candidateCount:candidates.length,cpuModel:'one shared alpha-beta convergence search on 4 cores / 4 threads',single,quad:quadRuns,singleAvgMs:singleAvg,quadAvgMs:quadAvg,speedup:singleAvg/quadAvg,moveStableSingle:single[0].move===single[1].move&&single[0].score===single[1].score,moveStableQuad:quadRuns[0].move===quadRuns[1].move&&quadRuns[0].score===quadRuns[1].score,selftest:{single:singleSelftest,quad:quadSelftest}};
           console.log('CONVERGE4_RESULT:'+JSON.stringify(result));
           quad.PThread.terminateAllThreads();
           NODE
