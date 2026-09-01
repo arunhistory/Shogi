@@ -1,5 +1,5 @@
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -7,7 +7,7 @@ const host='127.0.0.1';
 const devPort=4193;
 const debuggingPort=9243;
 const appUrl=`http://${host}:${devPort}/`;
-const titleUrl=process.env.TITLE_URL??'http://127.0.0.1:9000/title-supercomputer';
+const titleUrl=process.env.TITLE_URL??`http://${host}:${devPort}/__supertitle`;
 const titleKey=process.env.TITLE_KEY??'bench';
 const titleTimeoutMs=Number(process.env.TITLE_TIMEOUT_MS??360000);
 const maxPlies=Number(process.env.MATCH_MAX_PLIES??200);
@@ -48,9 +48,11 @@ async function evaluate(cdp,expression){const r=await cdp.send('Runtime.evaluate
 
 const chromePath=findChrome();
 const profile=await mkdtemp(join(tmpdir(),'shogi-title-super-selfhost-match-'));
+const tempViteConfig=join(process.cwd(),'.tmp-title-super-vite.config.mjs');
 let dev=null,chrome=null,cdp=null;
 try{
-  dev=spawn(process.platform==='win32'?'npm.cmd':'npm',['run','dev','--','--host',host,'--port',String(devPort),'--strictPort'],{stdio:['ignore','ignore','inherit'],env:{...process.env}});
+  await writeFile(tempViteConfig,`import {defineConfig} from 'vite';\nexport default defineConfig({base:'./',build:{target:'es2022',sourcemap:false},server:{proxy:{'/__supertitle':{target:'http://127.0.0.1:9000',changeOrigin:false,rewrite:()=>'/title-supercomputer'}}}});\n`);
+  dev=spawn(process.platform==='win32'?'npm.cmd':'npm',['run','dev','--','--config',tempViteConfig,'--host',host,'--port',String(devPort),'--strictPort'],{stdio:['ignore','ignore','inherit'],env:{...process.env}});
   await waitForHttp(appUrl);
   chrome=spawn(chromePath,['--headless=new','--disable-dev-shm-usage','--disable-background-networking','--no-first-run','--no-default-browser-check','--no-sandbox','--disable-gpu',`--remote-debugging-address=${host}`,`--remote-debugging-port=${debuggingPort}`,`--user-data-dir=${profile}`,appUrl],{stdio:['ignore','ignore','inherit']});
   await waitForHttp(`http://${host}:${debuggingPort}/json/version`);
@@ -74,7 +76,7 @@ try{
     const decodeMove=code=>{if(!Number.isInteger(code)||code<0)return null;const to=code&0x7f,from=(code>>7)&0x7f,drop=(code>>14)&0xf,promote=((code>>18)&1)===1;if(to<0||to>=81)return null;const dst=[Math.floor(to/9),to%9];if(drop){const kinds={1:'pawn',2:'lance',3:'knight',4:'silver',5:'gold',6:'bishop',7:'rook'};if(!kinds[drop]||from!==127||promote)return null;return{drop:kinds[drop],to:dst};}if(from<0||from>=81)return null;return{from:[Math.floor(from/9),from%9],to:dst,...(promote?{promote:true}:{})};};
     const encodePosition=position=>{const words=new Array(POSITION_WORDS).fill(0);words[0]=POSITION_MAGIC;words[1]=position.turn==='sente'?1:-1;let index=2;for(const row of position.board)for(const piece of row)words[index++]=piece?(piece.side==='sente'?1:-1)*pieceCodes[piece.kind]:0;for(const side of ['sente','gote'])for(const kind of handKinds)words[index++]=position.hands[side][kind];if(index!==POSITION_WORDS)throw new Error('POSITION_ENCODING_SIZE:'+index);return words;};
     const request=(worker,payload,timeoutMs)=>new Promise((resolve,reject)=>{const requestId=crypto.randomUUID();const timer=setTimeout(()=>{cleanup();reject(new Error('WORKER_TIMEOUT:'+payload.type));},timeoutMs);const cleanup=()=>{clearTimeout(timer);worker.removeEventListener('message',onMessage);worker.removeEventListener('error',onError);};const onError=()=>{cleanup();reject(new Error('WORKER_ERROR:'+payload.type));};const onMessage=event=>{const data=event.data;if(data?.requestId!==requestId)return;cleanup();data.ok?resolve(data):reject(new Error(data?.error??'WORKER_FAILED'));};worker.addEventListener('message',onMessage);worker.addEventListener('error',onError);worker.postMessage({...payload,requestId});});
-    const callTitle=async(body)=>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),TITLE_TIMEOUT_MS);try{const response=await fetch(TITLE_URL,{method:'POST',headers:{'content-type':'application/json','apikey':TITLE_KEY},body:JSON.stringify(body),signal:controller.signal,cache:'no-store',credentials:'omit'});const text=await response.text();let data;try{data=JSON.parse(text);}catch{throw new Error('TITLE_NON_JSON_HTTP_'+response.status+':'+text.slice(0,200));}if(!response.ok||!data?.ok)throw new Error('TITLE_HTTP_'+response.status+':'+String(data?.error??'UNKNOWN'));return data.result;}finally{clearTimeout(timer);}};
+    const callTitle=async(body)=>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),TITLE_TIMEOUT_MS);try{const response=await fetch(TITLE_URL,{method:'POST',headers:{'content-type':'application/json','apikey':TITLE_KEY},body:JSON.stringify(body),signal:controller.signal,cache:'no-store',credentials:'same-origin'});const text=await response.text();let data;try{data=JSON.parse(text);}catch{throw new Error('TITLE_NON_JSON_HTTP_'+response.status+':'+text.slice(0,200));}if(!response.ok||!data?.ok)throw new Error('TITLE_HTTP_'+response.status+':'+String(data?.error??'UNKNOWN'));return data.result;}finally{clearTimeout(timer);}};
     let position=engine.initialPosition();
     proWorker.postMessage({type:'warmup',position,level:'pro',wasmUrl:regularWasmUrl});
     await new Promise(resolve=>setTimeout(resolve,400));
@@ -94,4 +96,4 @@ try{
     }finally{proWorker.terminate();}
   })()`);
   console.log('SUPER_MATCH_RESULT:'+JSON.stringify(result));
-}finally{cdp?.close();await stopChild(chrome);await stopChild(dev);await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+}finally{cdp?.close();await stopChild(chrome);await stopChild(dev);await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});await rm(tempViteConfig,{force:true});}
