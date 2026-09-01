@@ -1,0 +1,118 @@
+name: title-supercomputer-practical-vs-pro
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'deployment/title-supercomputer-practical-20260901'
+    paths:
+      - 'scripts/title-supercomputer-practical-proxy.mjs'
+      - '.github/workflows/title-supercomputer-practical-vs-pro.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deployment/title-supercomputer-practical-20260901
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install tools and build regular Pro engine
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y emscripten wabt binaryen
+          echo "RUNNER_NPROC:$(nproc)"
+          test "$(nproc)" -ge 4
+          npm ci
+          sh scripts/build-wasm.sh
+          wasm-validate public/wasm/shogi_engine.wasm
+
+      - name: Build practical Title CPU
+        run: |
+          set -euo pipefail
+          node scripts/temp-patch-title-super-fastpath.mjs cpp/title_supercomputer.cpp /tmp/super-fast.cpp
+          node scripts/temp-patch-title-super-metrics.mjs /tmp/super-fast.cpp /tmp/super-metrics.cpp
+          node scripts/temp-patch-title-super-inplace.mjs /tmp/super-metrics.cpp /tmp/super-inplace.cpp
+          node scripts/temp-patch-title-super-converge4.mjs /tmp/super-inplace.cpp /tmp/super-engine.cpp
+          node scripts/temp-patch-title-super-practical.mjs /tmp/super-engine.cpp /tmp/super-practical.cpp
+          em++ /tmp/super-practical.cpp \
+            -Icpp -O3 -std=c++17 -include initializer_list \
+            -DSUPER_ENGINE_THREADS=8 \
+            -pthread \
+            -s WASM=1 \
+            -s ENVIRONMENT=node \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME=createTitlePractical \
+            -s PTHREAD_POOL_SIZE=7 \
+            -s ALLOW_MEMORY_GROWTH=0 \
+            -s INITIAL_MEMORY=134217728 \
+            -s EXPORTED_FUNCTIONS='["_shogi_input_buffer","_shogi_input_capacity","_shogi_super_search_specialist","_shogi_super_converge","_shogi_super_best_score","_shogi_super_nodes_searched","_shogi_super_inplace_selftest"]' \
+            -s EXPORTED_RUNTIME_METHODS='["HEAP32","PThread"]' \
+            --no-entry \
+            -o /tmp/title-practical.js
+          wasm-validate --enable-threads /tmp/title-practical.wasm
+          test -s /tmp/title-practical.worker.js
+
+      - name: Verify application before practical match
+        run: |
+          set -euo pipefail
+          npm test
+          npm run build
+          node scripts/test-wasm.mjs
+          npm audit --audit-level=high
+
+      - name: Start practical Title proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE_TITLE_KEY="$(node - <<'NODE'
+          const fs=require('fs');
+          const text=fs.readFileSync('scripts/title-supercomputer-vs-pro.mjs','utf8');
+          const match=text.match(/const titleKey='([^']+)'/);
+          if(!match)process.exit(2);
+          process.stdout.write(match[1]);
+          NODE
+          )"
+          test -n "$REMOTE_TITLE_KEY"
+          REMOTE_TITLE_URL='https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer' \
+          REMOTE_TITLE_KEY="$REMOTE_TITLE_KEY" \
+          TITLE_KEY='bench' \
+          TITLE_PRACTICAL_JS='/tmp/title-practical.js' \
+          TITLE_PRACTICAL_WASM='/tmp/title-practical.wasm' \
+          node scripts/title-supercomputer-practical-proxy.mjs >/tmp/practical-proxy.log 2>&1 &
+          echo $! >/tmp/practical-proxy.pid
+          for i in $(seq 1 80); do
+            if curl -fsS http://127.0.0.1:9000/health >/dev/null; then
+              cat /tmp/practical-proxy.log
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/practical-proxy.log
+          exit 1
+
+      - name: Play exactly one Pro-sente versus practical SuperTitle-gote game
+        env:
+          TITLE_KEY: bench
+          TITLE_TIMEOUT_MS: '900000'
+          MATCH_MAX_PLIES: '200'
+        run: |
+          set -euo pipefail
+          node scripts/title-supercomputer-selfhost-vs-pro.mjs | tee /tmp/practical-match.log
+          grep 'SUPER_MATCH_RESULT:' /tmp/practical-match.log
+
+      - name: Report and cleanup
+        if: always()
+        run: |
+          if test -f /tmp/practical-match.log; then grep 'SUPER_MATCH_RESULT:' /tmp/practical-match.log || true; fi
+          if test -f /tmp/practical-proxy.log; then tail -200 /tmp/practical-proxy.log || true; fi
+          if test -f /tmp/practical-proxy.pid; then kill "$(cat /tmp/practical-proxy.pid)" >/dev/null 2>&1 || true; fi
