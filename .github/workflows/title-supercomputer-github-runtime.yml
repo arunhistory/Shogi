@@ -80,7 +80,6 @@ jobs:
         env:
           SPECIALIST_ID: ${{ matrix.id }}
           POSITION_WORDS: ${{ needs.pro-step.outputs.position_words }}
-          SPECIALIST_OUTPUT: /tmp/specialist-${{ format('{0:00}', matrix.id) }}.json
         run: |
           set -euo pipefail
           echo "RUNNER_NPROC:$(nproc)"
