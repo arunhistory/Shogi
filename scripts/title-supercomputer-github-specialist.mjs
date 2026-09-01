@@ -38,7 +38,11 @@ async function runDual12(){
   await copyFile('runtime/title-dual12.worker.js','/tmp/title-dual12.worker.js');
   const require=createRequire(import.meta.url);
   const createTitleDual12=require('/tmp/title-dual12.cjs');
-  const module=await createTitleDual12();
+  const wasmBinary=await readFile('/tmp/title-dual12.wasm');
+  const module=await createTitleDual12({
+    wasmBinary,
+    locateFile:path=>`/tmp/${path}`,
+  });
   try{
     const pointer=module._shogi_input_buffer();
     const capacity=module._shogi_input_capacity();
