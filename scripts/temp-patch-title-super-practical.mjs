@@ -8,8 +8,6 @@ const assert=(condition,message)=>{if(!condition)throw new Error(message);};
 const searchToken='int32_t super_search(const Position&root,int specialist,int maxDepth,int nodeLimit,const int32_t*restrictMoves,int restrictCount){';
 const start=source.indexOf(searchToken);
 assert(start>=0,'PRACTICAL_SEARCH_START_MISSING');
-const end=source.indexOf('}\n`;',start);
-assert(end<0,'PRACTICAL_UNEXPECTED_TEMPLATE_BOUNDARY');
 const externAnchor='}\n\nextern "C" {';
 const searchEnd=source.indexOf(externAnchor,start);
 assert(searchEnd>start,'PRACTICAL_SEARCH_END_MISSING');
@@ -59,7 +57,7 @@ int32_t super_search(const Position&root,int specialist,int maxDepth,int nodeLim
 }
 `;
 
-source=source.slice(0,start)+replacement+source.slice(searchEnd);
+source=source.slice(0,start)+replacement+source.slice(searchEnd+1);
 assert(source.includes('if(specialist==12)return super_search_dual12'),'PRACTICAL_DUAL12_DISPATCH_MISSING');
 assert(source.includes('if(specialist==0)return super_search_convergence_engine'),'PRACTICAL_CONVERGENCE_DISPATCH_MISSING');
 await writeFile(output,source);
