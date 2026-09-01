@@ -1,0 +1,57 @@
+name: temp-title-authority-smoke
+on:
+  push:
+    branches: [main]
+    paths: ['.title-authority-smoke']
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify GitHub to Supabase authoritative game flow
+        env:
+          URL: https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer
+          KEY: sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF
+        run: |
+          set -euo pipefail
+          call(){ curl -sS -X POST "$URL" -H 'content-type: application/json' -H "apikey: $KEY" --data "$1"; }
+          H="$(call '{"action":"health"}')"
+          echo "HEALTH:$H"
+          test "$(jq -r '.ok' <<<"$H")" = true
+          test "$(jq -r '.mode' <<<"$H")" = authoritative-game-controller
+          test "$(jq -r '.githubConfigured' <<<"$H")" = false
+
+          S="$(call '{"action":"start_match","order":"sente","senteHandicap":"even","goteHandicap":"even"}')"
+          echo "START_OK:$(jq -c '{ok,phase,humanSide,titleSide,turn:.position.turn,ply:.position.ply}' <<<"$S")"
+          test "$(jq -r '.ok' <<<"$S")" = true
+          test "$(jq -r '.phase' <<<"$S")" = human_turn
+          test "$(jq -r '.humanSide' <<<"$S")" = sente
+          test "$(jq -r '.titleSide' <<<"$S")" = gote
+          TOKEN="$(jq -r '.stateToken' <<<"$S")"
+          test -n "$TOKEN"
+
+          BAD="$(jq -nc --arg t "$TOKEN" '{action:"user_move",stateToken:$t,move:{from:[6,0],to:[4,0]}}')"
+          R_BAD="$(call "$BAD")"
+          echo "ILLEGAL:$R_BAD"
+          test "$(jq -r '.error' <<<"$R_BAD")" = ILLEGAL_MOVE
+
+          TAMPER="${TOKEN%?}A"
+          TAMPER_BODY="$(jq -nc --arg t "$TAMPER" '{action:"user_move",stateToken:$t,move:{from:[6,0],to:[5,0]}}')"
+          R_TAMPER="$(call "$TAMPER_BODY")"
+          echo "TAMPER:$R_TAMPER"
+          test "$(jq -r '.error' <<<"$R_TAMPER")" = STATE_TOKEN_INVALID
+
+          GOOD="$(jq -nc --arg t "$TOKEN" '{action:"user_move",stateToken:$t,move:{from:[6,0],to:[5,0]}}')"
+          TMP="$(mktemp)"
+          CODE="$(curl -sS -o "$TMP" -w '%{http_code}' -X POST "$URL" -H 'content-type: application/json' -H "apikey: $KEY" --data "$GOOD")"
+          R_GOOD="$(cat "$TMP")"
+          echo "USER_MOVE_STATUS:$CODE"
+          echo "USER_MOVE:$(jq -c '{ok,error,turn:.position.turn,ply:.position.ply,hasState:(.stateToken|type=="string")}' <<<"$R_GOOD")"
+          test "$CODE" = 503
+          test "$(jq -r '.error' <<<"$R_GOOD")" = GITHUB_NOT_CONFIGURED
+          test "$(jq -r '.position.turn' <<<"$R_GOOD")" = gote
+          test "$(jq -r '.position.ply' <<<"$R_GOOD")" = 1
+          test "$(jq -r '.stateToken|type' <<<"$R_GOOD")" = string
+          echo TITLE_AUTHORITY_SMOKE_PASS
