@@ -4,23 +4,21 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 const host='127.0.0.1';
-const previewPort=4173;
 const debuggingPort=9229;
-const appUrl=`http://${host}:${previewPort}/`;
+const appUrl='https://arunhistory.github.io/Shogi/';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function assert(value,message){if(!value)throw new Error(message);}
 function findChrome(){for(const name of ['google-chrome','google-chrome-stable','chromium','chromium-browser']){const found=spawnSync('which',[name],{encoding:'utf8'});if(found.status===0&&found.stdout.trim())return found.stdout.trim();}throw new Error('CHROME_NOT_FOUND');}
-async function waitHttp(url,timeout=20000){const end=Date.now()+timeout;while(Date.now()<end){try{const response=await fetch(url,{cache:'no-store'});if(response.ok)return response;}catch{}await delay(100);}throw new Error(`HTTP_TIMEOUT:${url}`);}
+async function waitHttp(url,timeout=30000){const end=Date.now()+timeout;while(Date.now()<end){try{const response=await fetch(url,{cache:'no-store'});if(response.ok)return response;}catch{}await delay(100);}throw new Error(`HTTP_TIMEOUT:${url}`);}
 async function stop(child){if(!child||child.exitCode!==null)return;const exited=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await Promise.race([exited,delay(2000)]);if(child.exitCode===null)child.kill('SIGKILL');}
 class Cdp{constructor(socket){this.socket=socket;this.next=1;this.pending=new Map();socket.addEventListener('message',event=>{let message;try{message=JSON.parse(event.data);}catch{return;}if(!message.id)return;const pending=this.pending.get(message.id);if(!pending)return;this.pending.delete(message.id);message.error?pending.reject(new Error(message.error.message)):pending.resolve(message.result??{});});}static async connect(url){const socket=new WebSocket(url);await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',()=>reject(new Error('CDP_CONNECT_ERROR')),{once:true});});return new Cdp(socket);}send(method,params={}){const id=this.next++;return new Promise((resolve,reject)=>{this.pending.set(id,{resolve,reject});this.socket.send(JSON.stringify({id,method,params}));});}close(){this.socket.close();}}
 async function evaluate(cdp,expression){const result=await cdp.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true,userGesture:true});if(result.exceptionDetails)throw new Error(result.exceptionDetails.exception?.description??result.exceptionDetails.text);return result.result?.value;}
 async function waitFor(cdp,expression,label,timeout=20000){const end=Date.now()+timeout;while(Date.now()<end){try{if(await evaluate(cdp,`Boolean(${expression})`))return;}catch{}await delay(100);}throw new Error(`WAIT_TIMEOUT:${label}`);}
 
+await waitHttp(appUrl);
 const profile=await mkdtemp(join(tmpdir(),'title-ui-e2e-'));
-let preview,chrome,cdp;
+let chrome,cdp;
 try{
-  preview=spawn('npm',['run','preview','--','--host',host,'--port',String(previewPort),'--strictPort'],{stdio:['ignore','pipe','pipe'],env:{...process.env}});
-  await waitHttp(appUrl);
   chrome=spawn(findChrome(),['--headless=new','--disable-gpu','--disable-dev-shm-usage','--no-sandbox','--disable-background-networking','--no-first-run','--no-default-browser-check',`--remote-debugging-address=${host}`,`--remote-debugging-port=${debuggingPort}`,`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','pipe','pipe']});
   await waitHttp(`http://${host}:${debuggingPort}/json/version`);
   const targets=await (await waitHttp(`http://${host}:${debuggingPort}/json/list`)).json();
@@ -31,7 +29,7 @@ try{
   await cdp.send('Runtime.enable');
   await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`(()=>{const nativeFetch=window.fetch.bind(window);window.__titleResponses=[];window.fetch=async(...args)=>{const response=await nativeFetch(...args);try{const url=typeof args[0]==='string'?args[0]:args[0]?.url||'';if(String(url).includes('/functions/v1/title-supercomputer')){const copy=response.clone();const json=await copy.json();window.__titleResponses.push(json);}}catch{}return response;};})();`});
   await cdp.send('Page.navigate',{url:`${appUrl}?titleE2E=${Date.now()}`});
-  await waitFor(cdp,`document.querySelector('#start')`,'menu');
+  await waitFor(cdp,`document.querySelector('#start')`,'menu',30000);
   await evaluate(cdp,`document.querySelector('#start').click()`);
   await waitFor(cdp,`document.querySelector('[data-mode="cpu"]')`,'cpu-mode');
   await evaluate(cdp,`document.querySelector('[data-mode="cpu"]').click()`);
@@ -55,6 +53,5 @@ try{
 }finally{
   cdp?.close();
   await stop(chrome);
-  await stop(preview);
   await rm(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }
