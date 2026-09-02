@@ -6,7 +6,7 @@ on:
 permissions:
   contents: write
 jobs:
-  verify-mobile-visual:
+  verify-red-opponent-visual:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -17,15 +17,18 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - name: Patch mobile visual only
+      - name: Patch opponent action markers to red
         run: node scripts/temp-fix-opponent-mobile.mjs
-      - name: Verify patch scope and distinct markers
+      - name: Verify patch scope and red markers
         run: |
           git diff --check
           test "$(git diff --name-only)" = "src/style.css"
-          grep -q 'cell.opponent-move-from{box-shadow:inset 0 0 0 4px rgba(43,92,170,.88)}' src/style.css
-          grep -q 'cell.opponent-move-to{box-shadow:inset 0 0 0 4px rgba(241,205,72,.94)}' src/style.css
-          ! grep -q 'opponent-move-from,.cell.opponent-move-to{box-shadow:inset 0 0 0 4px currentColor}' src/style.css
+          grep -q 'cell.opponent-move-from{box-shadow:inset 0 0 0 5px rgba(177,24,24,.92)}' src/style.css
+          grep -q 'cell.opponent-move-to{box-shadow:inset 0 0 0 5px rgba(177,24,24,.92)}' src/style.css
+          grep -q 'cell.opponent-move-from:before{width:48%;aspect-ratio:1;border:4px solid rgba(177,24,24,.95)' src/style.css
+          grep -q 'cell.opponent-move-to:before{width:34%;aspect-ratio:1;border-radius:50%;background:rgba(196,28,28,.78)' src/style.css
+          ! grep -q 'rgba(43,92,170' src/style.css
+          ! grep -q 'rgba(241,205,72' src/style.css
       - name: Install dependencies
         run: npm ci
       - name: Unit tests
@@ -38,12 +41,12 @@ jobs:
         run: npm run build
       - name: Browser smoke
         run: npm run test:browser
-      - name: Commit verified mobile visual fix
+      - name: Commit verified red visual
         run: |
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           git config user.name 'arunhistory'
           git config user.email 'garigarimegane625@gmail.com'
           git add src/style.css
-          git commit -m 'fix: preserve opponent move colors on mobile'
+          git commit -m 'fix: use red opponent move markers'
           git push origin HEAD:main
