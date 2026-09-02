@@ -1,0 +1,21 @@
+name: temp-title-health
+on:
+  push:
+    branches: [main]
+    paths: ['.title-health-trigger']
+permissions:
+  contents: read
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check Title controller health
+        env:
+          URL: https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer
+          KEY: sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF
+        run: |
+          set -euo pipefail
+          R="$(curl -fsS -X POST "$URL" -H 'content-type: application/json' -H "apikey: $KEY" --data '{"action":"health"}')"
+          echo "TITLE_HEALTH:$R"
+          test "$(jq -r '.ok' <<<"$R")" = true
