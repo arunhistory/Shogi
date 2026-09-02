@@ -34,12 +34,12 @@ jobs:
         run: npm run build
       - name: Browser smoke
         run: npm run test:browser
-      - name: Commit verified UI connection
+      - name: Commit verified Title UI code only
         run: |
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           git config user.name 'arunhistory'
           git config user.email 'garigarimegane625@gmail.com'
-          git add src/main.ts .github/workflows/pages.yml
+          git add src/main.ts
           git commit -m 'feat: connect Title UI to Supabase controller'
           git push origin HEAD:main
