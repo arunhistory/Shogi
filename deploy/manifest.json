@@ -1,7 +1,7 @@
 {
   "version": 2,
   "service": "shogi-system",
-  "githubCommit": "56008842f557a5489d411e5cb9847557d5a10113",
+  "githubCommit": "e628fe9a41aeabe6a190fac85c4c6d2150794164",
   "mainModule": {
     "name": "index-v2.js",
     "url": "https://arunhistory.github.io/Shogi/deploy/index-v2.js",
