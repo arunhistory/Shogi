@@ -56,6 +56,8 @@ jobs:
       - name: Build production app
         env:
           VITE_SHOGI_API_URL: https://shogi-system.garigarimegane625.workers.dev
+          VITE_TITLE_SUPABASE_URL: https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer
+          VITE_TITLE_SUPABASE_KEY: sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF
         run: npm run build
       - name: Verify packaged BGM
         run: |
