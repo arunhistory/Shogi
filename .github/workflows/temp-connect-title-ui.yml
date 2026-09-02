@@ -4,42 +4,24 @@ on:
     branches: [main]
     paths: ['.title-ui-connect-trigger']
 permissions:
-  contents: write
+  contents: read
 jobs:
-  connect:
+  title-ui-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Patch Title UI path only
-        run: node scripts/temp-connect-title-ui.mjs
-      - name: Verify patch scope
-        run: |
-          git diff --check
-          test "$(git diff --name-only | sort | tr '\n' ' ')" = ".github/workflows/pages.yml src/main.ts "
+          package-manager-cache: false
       - name: Install dependencies
         run: npm ci
-      - name: Unit tests
-        run: npm test
-      - name: Production build
+      - name: Build production UI with Title endpoint
         env:
           VITE_SHOGI_API_URL: https://shogi-system.garigarimegane625.workers.dev
           VITE_TITLE_SUPABASE_URL: https://mpuhgfbdkxmhynytwhzu.supabase.co/functions/v1/title-supercomputer
           VITE_TITLE_SUPABASE_KEY: sb_publishable_POCxau9QCPFlF0J11o-ZFg_-QY4b8gF
         run: npm run build
-      - name: Browser smoke
-        run: npm run test:browser
-      - name: Commit verified Title UI code only
-        run: |
-          git fetch origin main
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-          git config user.name 'arunhistory'
-          git config user.email 'garigarimegane625@gmail.com'
-          git add src/main.ts
-          git commit -m 'feat: connect Title UI to Supabase controller'
-          git push origin HEAD:main
+      - name: Run Title UI authoritative round-trip
+        run: node scripts/temp-title-ui-e2e.mjs
