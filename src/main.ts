@@ -71,10 +71,17 @@ let onlineMessage='';
 let matchStartedAt:number|null=null;
 let matchEndedAt:number|null=null;
 let elapsedTimer:number|null=null;
+let lastOpponentMove:Move|null=null;
+let opponentMoveVisible=false;
 
 const app=document.querySelector<HTMLDivElement>('#app')!;
 
 function resetInteraction(){selected=null;hand=null;candidates=[];}
+function rememberOpponentMove(move:Move){
+  lastOpponentMove={...move,to:[move.to[0],move.to[1]],...(move.from?{from:[move.from[0],move.from[1]] as [number,number]}:{})};
+  opponentMoveVisible=false;
+}
+function clearOpponentMove(){lastOpponentMove=null;opponentMoveVisible=false;}
 function stopElapsedTimer(){if(elapsedTimer!==null){window.clearInterval(elapsedTimer);elapsedTimer=null;}}
 function resetMatchClock(){stopElapsedTimer();matchStartedAt=null;matchEndedAt=null;}
 function setMatchClock(startedAt:number|null,endedAt:number|null=null){
@@ -142,6 +149,7 @@ function syncTitleResponse(response:TitleResponse,playMoveSound:boolean){
   titleSession={gameId:response.gameId,stateToken:response.stateToken};
   titleOutcome=response.outcome;
   humanSide=response.humanSide;
+  if(response.title?.move)rememberOpponentMove(response.title.move);
   pos=response.position;
   cpuThinking=response.phase==='cpu_pending';
   titleMessage=response.phase==='cpu_pending'?'CPU思考中…':'';
@@ -302,6 +310,7 @@ function leaveMatch(){
   cancelTitle();
   cancelOnline();
   resetInteraction();
+  clearOpponentMove();
   resetMatchClock();
   localTerminal=null;
 }
@@ -626,8 +635,12 @@ function play(){
     ?`<aside class="online-info"><div>あなた: ${onlineSeat?sideName(onlineSeat):'確認中'}</div><div>接続: 先手 ${onlineState.connections.sente} / 後手 ${onlineState.connections.gote}</div><label>招待URL<input readonly value="${escapeHtml(onlineRoom.inviteUrl)}"></label><label>パスコード<input readonly value="${escapeHtml(onlineRoom.passcode)}"></label>${onlineMessage?`<p class="note">${escapeHtml(onlineMessage)}</p>`:''}${onlineMessage?'<button id="reconnect">再接続</button>':''}</aside>`:'';
   const modeInfo=activeMode==='cpu'?`<div class="note cpu-level">CPU: ${cpuLabels[cpuLevel]} / あなた: ${sideName(humanSide)}</div>`:activeMode==='local'?`<div class="note local-order">プレイヤー1: ${sideName(localPlayerOneSide)}</div>`:'';
   const canResign=!ended&&(activeMode!=='online'||onlineState?.status==='playing')&&(!isTitleMatch()||!!titleSession);
-  app.innerHTML=`<main class="game"><header>${canResign?'<button class="resign-button" id="resign">諦める</button>':'<span class="resign-spacer"></span>'}<div class="match-header"><span class="elapsed-label">経過 <strong id="elapsed">${formatElapsed()}</strong></span><strong>${status}</strong></div></header>${onlineInfo}<section class="hand" id="goteHand"></section><div class="board" id="board" aria-busy="${cpuThinking||onlinePendingAction?'true':'false'}"></div><section class="hand" id="senteHand"></section>${modeInfo}${resultMarkup(terminal)}</main>`;
+  const opponentAction=activeMode==='cpu'&&lastOpponentMove&&!ended
+    ?`<button class="opponent-action-button${opponentMoveVisible?' active':''}" id="opponentAction" type="button" aria-pressed="${opponentMoveVisible?'true':'false'}">相手行動</button>`
+    :'<span class="opponent-action-spacer"></span>';
+  app.innerHTML=`<main class="game"><header>${canResign?'<button class="resign-button" id="resign">諦める</button>':'<span class="resign-spacer"></span>'}<div class="match-header"><span class="elapsed-label">経過 <strong id="elapsed">${formatElapsed()}</strong></span><strong>${status}</strong></div>${opponentAction}</header>${onlineInfo}<section class="hand" id="goteHand"></section><div class="board" id="board" aria-busy="${cpuThinking||onlinePendingAction?'true':'false'}"></div><section class="hand" id="senteHand"></section>${modeInfo}${resultMarkup(terminal)}</main>`;
   document.querySelector('#resign')?.addEventListener('click',showResignDialog);
+  document.querySelector('#opponentAction')?.addEventListener('click',()=>{opponentMoveVisible=!opponentMoveVisible;resetInteraction();play();});
   bindResultActions();
   document.querySelector('#reconnect')?.addEventListener('click',()=>{
     onlineMessage='再接続しています…';
@@ -641,6 +654,8 @@ function play(){
     cell.disabled=!humanCanOperate;
     if(selected?.[0]===y&&selected[1]===x)cell.classList.add('selected');
     if(candidates.some(move=>move.to[0]===y&&move.to[1]===x))cell.classList.add('legal');
+    if(opponentMoveVisible&&lastOpponentMove?.from?.[0]===y&&lastOpponentMove.from[1]===x)cell.classList.add('opponent-move-from');
+    if(opponentMoveVisible&&lastOpponentMove?.to[0]===y&&lastOpponentMove.to[1]===x)cell.classList.add('opponent-move-to');
     if(piece){cell.textContent=names[piece.kind]??piece.kind;if(piece.side==='gote')cell.classList.add('gote');}
     cell.addEventListener('click',()=>clickSquare(y,x,moves));
     board.append(cell);
@@ -656,13 +671,14 @@ function renderHand(side:Side,id:string,moves:Move[],humanCanOperate:boolean){
     const button=document.createElement('button');
     button.textContent=`${names[kind]??kind}×${count}`;
     button.disabled=!humanCanOperate||side!==pos.turn;
-    button.addEventListener('click',()=>{selected=null;hand=kind as PieceKind;candidates=moves.filter(move=>move.drop===kind);play();});
+    button.addEventListener('click',()=>{opponentMoveVisible=false;selected=null;hand=kind as PieceKind;candidates=moves.filter(move=>move.drop===kind);play();});
     element.append(button);
   }
 }
 function clickSquare(y:number,x:number,moves:Move[]){
   if(cpuThinking||terminalState().ended||(activeMode==='cpu'&&pos.turn!==humanSide))return;
   if(activeMode==='online'&&(!onlineState||onlineState.status!=='playing'||onlineSeat!==pos.turn||onlinePendingAction))return;
+  if(opponentMoveVisible)opponentMoveVisible=false;
   const hit=candidates.filter(move=>move.to[0]===y&&move.to[1]===x);
   if(hit.length){
     let move=hit[0]!;
@@ -710,6 +726,7 @@ function maybeStartCpu(){
     cpuRequestId=null;
     if(terminalState().ended||!event.data.ok||!event.data.result?.move||event.data.positionKey!==sourceKey||positionKey(pos)!==sourceKey){play();return;}
     try{pos=applyMove(pos,event.data.result.move);}catch{play();return;}
+    rememberOpponentMove(event.data.result.move);
     void audioController.playSe('move');
     resetInteraction();
     play();
