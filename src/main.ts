@@ -395,7 +395,13 @@ async function showCloudDocument(key:CloudContentKey,title:string){
   try{
     const documentValue=await fetchCloudContent(api,key);
     if(!documentValue.available){state.textContent='現在、本文は未登録です。';return;}
-    state.replaceWith(renderCloudBody(documentValue.body));
+    const rendered=renderCloudBody(documentValue.body);
+    if(key==='terms'){
+      const deadline=document.createElement('p');
+      deadline.textContent='最長2027年12月31日まで公開';
+      rendered.append(deadline);
+    }
+    state.replaceWith(rendered);
   }catch{state.textContent='本文を取得できませんでした。';}
 }
 function renderCloudBody(body:unknown):HTMLElement{
