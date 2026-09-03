@@ -1,0 +1,55 @@
+name: temp-terms-publication-deadline
+on:
+  push:
+    branches: [main]
+    paths: ['.terms-publication-deadline-trigger']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Patch terms footer only
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path('src/main.ts')
+          text=path.read_text()
+          old="    state.replaceWith(renderCloudBody(documentValue.body));"
+          new="""    const rendered=renderCloudBody(documentValue.body);\n    if(key==='terms'){\n      const deadline=document.createElement('p');\n      deadline.textContent='最長2027年12月31日まで公開';\n      rendered.append(deadline);\n    }\n    state.replaceWith(rendered);"""
+          if old not in text:
+              raise SystemExit('TARGET_NOT_FOUND')
+          if '最長2027年12月31日まで公開' in text:
+              raise SystemExit('ALREADY_PRESENT')
+          text=text.replace(old,new,1)
+          path.write_text(text)
+          PY
+      - name: Verify patch scope
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- . ':!src/main.ts'
+          test "$(grep -c '最長2027年12月31日まで公開' src/main.ts)" -eq 1
+          git diff --check
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Commit verified terms deadline
+        run: |
+          set -euo pipefail
+          git config user.name 'arunhistory'
+          git config user.email 'garigarimegane625@gmail.com'
+          git add src/main.ts
+          git commit -m 'docs: add shogi publication deadline to terms'
+          git push origin HEAD:main
