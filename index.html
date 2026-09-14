@@ -9,10 +9,17 @@
   <link rel="stylesheet" href="/src/ui/match-experience.css" />
   <link rel="stylesheet" href="/src/ui/move-history.css" />
   <link rel="stylesheet" href="/src/ui/orikuro-ad.css" />
+  <link rel="stylesheet" href="/src/ui/footer-documents.css" />
 </head>
 <body>
   <div id="app"></div>
-  <footer class="site-footer">©ある〜ん・由咲るい</footer>
+  <footer class="site-footer">
+    <span>©ある〜ん・由咲るい</span>
+    <span class="site-footer-separator" aria-hidden="true">|</span>
+    <button class="site-footer-link" type="button" data-footer-content="credits">クレジット</button>
+    <span class="site-footer-separator" aria-hidden="true">|</span>
+    <button class="site-footer-link" type="button" data-footer-content="licenses">ライセンス</button>
+  </footer>
   <div class="ad-bar" aria-label="広告">
     <a class="orikuro-ad" href="https://arunhistory.github.io/Orikuro-test/index.html" target="_blank" rel="noopener noreferrer" aria-label="Original Create Project オリクロ公式サイトを開く">
       <img class="orikuro-ad-symbol" src="https://arunhistory.github.io/Orikuro-test/assets/oc-symbol-user.jpg" alt="" />
@@ -33,5 +40,6 @@
   <script type="module" src="/src/ui/visual-assets.ts"></script>
   <script type="module" src="/src/ui/content-assist.ts"></script>
   <script type="module" src="/src/ui/handicap-options.ts"></script>
+  <script type="module" src="/src/ui/footer-documents.ts"></script>
 </body>
 </html>
