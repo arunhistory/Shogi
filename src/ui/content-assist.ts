@@ -1,5 +1,6 @@
 import { formatCloudBody } from '../content/format';
 import type { CloudBodyNode } from '../content/format';
+import { correctCreatorAttributionIn } from '../content/creator-attribution';
 
 function renderNode(node:CloudBodyNode):HTMLElement{
   if(node.kind==='paragraph'){
@@ -39,6 +40,10 @@ function upgradeManagedContent():void{
   }
 }
 
+function correctManagedCreatorAttribution():void{
+  for(const body of document.querySelectorAll<HTMLElement>('.cloud-document-body,.cloud-document-categories'))correctCreatorAttributionIn(body);
+}
+
 function removeSettingsMaterialNote():void{
   const panel=document.querySelector<HTMLElement>('.settings-panel');
   if(!panel)return;
@@ -49,11 +54,12 @@ function removeSettingsMaterialNote():void{
 
 function enhanceUi():void{
   upgradeManagedContent();
+  correctManagedCreatorAttribution();
   removeSettingsMaterialNote();
 }
 
 const app=document.querySelector('#app');
 if(app){
-  new MutationObserver(enhanceUi).observe(app,{subtree:true,childList:true});
+  new MutationObserver(enhanceUi).observe(app,{subtree:true,childList:true,characterData:true});
   enhanceUi();
 }
