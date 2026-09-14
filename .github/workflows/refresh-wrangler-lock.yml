@@ -24,9 +24,9 @@ jobs:
           cache: npm
           cache-dependency-path: cloudflare/package-lock.json
 
-      - name: Refresh Wrangler dependency lock
+      - name: Refresh compatible Cloudflare dependency lock
         working-directory: cloudflare
-        run: npm install --package-lock-only --save-dev --save-exact wrangler@4.131.2
+        run: npm install --package-lock-only --save-dev --save-exact wrangler@4.131.2 @cloudflare/workers-types@5.20260911.1
 
       - name: Install locked dependencies
         working-directory: cloudflare
@@ -53,5 +53,5 @@ jobs:
             echo "No dependency changes to commit."
             exit 0
           fi
-          git commit -m "Update Wrangler to 4.131.2"
+          git commit -m "Update Wrangler and workers types"
           git push origin HEAD:fix/wrangler-4.131.2-lock
