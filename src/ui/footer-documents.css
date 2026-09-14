@@ -1,0 +1,14 @@
+.site-footer{gap:10px;padding:0 10px;white-space:nowrap}
+.site-footer-link{appearance:none;border:0;background:transparent;color:#d8c2a1;padding:2px 0;font:inherit;line-height:1;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.site-footer-link:hover,.site-footer-link:focus-visible{color:#f5ead9}
+.site-footer-separator{opacity:.45}
+.footer-doc-modal{position:fixed;inset:0;z-index:1600;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.72)}
+.footer-doc-dialog{width:min(92vw,680px);max-height:min(82dvh,760px);overflow:auto;border:1px solid #b99862;border-radius:14px;background:#241b14;color:#f5ead9;box-shadow:0 18px 60px rgba(0,0,0,.55);padding:22px}
+.footer-doc-header{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px}
+.footer-doc-header h2{margin:0;font-size:26px}
+.footer-doc-close{border:1px solid #755b39;border-radius:8px;background:#17120d;color:#f5ead9;padding:7px 11px;font:inherit;font-weight:700;cursor:pointer}
+.footer-doc-body{line-height:1.8;overflow-wrap:anywhere}
+.footer-doc-body p{margin:.6em 0}
+.footer-doc-body ul{padding-left:1.4em}
+.footer-doc-body pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#100c09;padding:14px;border-radius:8px}
+@media(max-width:520px){.site-footer{gap:7px;font-size:11px}.footer-doc-dialog{padding:16px}.footer-doc-header h2{font-size:22px}}
