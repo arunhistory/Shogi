@@ -1,5 +1,6 @@
 import { fetchCloudContent } from '../content/client';
 import type { CloudContentKey } from '../content/client';
+import { correctCreatorAttribution } from '../content/creator-attribution';
 
 const titles:Record<'credits'|'licenses',string>={credits:'クレジット',licenses:'ライセンス'};
 let activeModal:HTMLElement|null=null;
@@ -11,19 +12,20 @@ function apiBase():string|null{
 }
 
 function renderBody(body:unknown):HTMLElement{
+  const normalized=correctCreatorAttribution(body);
   const container=document.createElement('div');
   container.className='footer-doc-body';
-  if(typeof body==='string'){
-    for(const block of body.split(/\n{2,}/)){
+  if(typeof normalized==='string'){
+    for(const block of normalized.split(/\n{2,}/)){
       const p=document.createElement('p');
       p.textContent=block;
       container.append(p);
     }
     return container;
   }
-  if(Array.isArray(body)&&body.every(item=>typeof item==='string')){
+  if(Array.isArray(normalized)&&normalized.every(item=>typeof item==='string')){
     const list=document.createElement('ul');
-    for(const item of body){
+    for(const item of normalized){
       const li=document.createElement('li');
       li.textContent=item;
       list.append(li);
@@ -31,8 +33,8 @@ function renderBody(body:unknown):HTMLElement{
     container.append(list);
     return container;
   }
-  if(body&&typeof body==='object'&&!Array.isArray(body)){
-    for(const [heading,value] of Object.entries(body as Record<string,unknown>)){
+  if(normalized&&typeof normalized==='object'&&!Array.isArray(normalized)){
+    for(const [heading,value] of Object.entries(normalized as Record<string,unknown>)){
       const section=document.createElement('section');
       const h3=document.createElement('h3');
       h3.textContent=heading;
@@ -42,7 +44,7 @@ function renderBody(body:unknown):HTMLElement{
     return container;
   }
   const pre=document.createElement('pre');
-  try{pre.textContent=JSON.stringify(body,null,2);}catch{pre.textContent='表示できない形式です。';}
+  try{pre.textContent=JSON.stringify(normalized,null,2);}catch{pre.textContent='表示できない形式です。';}
   container.append(pre);
   return container;
 }
